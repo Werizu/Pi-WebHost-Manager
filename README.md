@@ -26,8 +26,9 @@ A command-line tool for managing a Raspberry Pi server from macOS. Deploy websit
 # Install pipx if you don't have it
 brew install pipx
 
-# Clone the repo
+# Clone the repo (use SSH if you have it set up)
 git clone https://github.com/Werizu/pi-manager.git
+# or: git clone git@github.com:Werizu/pi-manager.git
 cd pi-manager
 
 # Install
