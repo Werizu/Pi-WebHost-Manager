@@ -29,7 +29,7 @@ brew install pipx
 # Clone the repo (use SSH if you have it set up)
 git clone https://github.com/Werizu/Pi_Manager.git
 # or: git clone git@github.com:Werizu/pi-manager.git
-cd pi-manager
+cd Pi_Manager
 
 # Install
 pipx install .
@@ -213,7 +213,7 @@ In one-shot mode (`pi ssh`) SSH also opens in a new Terminal.app window. This is
 ## Updating
 
 ```bash
-cd pi-manager
+cd Pi_Manager
 git pull
 pipx install . --force
 ```
