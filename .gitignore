@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.so
+.venv/
+venv/
+.env
+.DS_Store
+
+# SSH keys — never commit these
+*.pem
+*.pub
+id_*
+w
+w.pub

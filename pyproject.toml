@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pi-manager"
+version = "0.1.0"
+description = "CLI tool for managing a Raspberry Pi server from macOS"
+license = "MIT"
+authors = [{ name = "Werizu" }]
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "paramiko>=3.0",
+    "requests>=2.31",
+    "prompt_toolkit>=3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Werizu/pi-manager"
+Repository = "https://github.com/Werizu/pi-manager"
+Issues = "https://github.com/Werizu/pi-manager/issues"
+
+[project.scripts]
+pi = "pi_manager.cli:cli"
