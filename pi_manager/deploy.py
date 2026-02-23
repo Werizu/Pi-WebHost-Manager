@@ -77,7 +77,7 @@ def purge_cloudflare_cache(config: dict, project: dict) -> bool:
     return False
 
 
-def deploy(config: dict, name: str) -> None:
+def deploy(config: dict, name: str, pi_name: str = "") -> None:
     """Deploy a project: rsync + Cloudflare cache purge."""
     project = config.get("projects", {}).get(name)
     if not project:
@@ -87,7 +87,8 @@ def deploy(config: dict, name: str) -> None:
             console.print(f"Available: {', '.join(projects.keys())}")
         return
 
-    console.print(f"[bold green]Deploying {name}...[/bold green]")
+    target_label = f" to [bold]{pi_name}[/bold]" if pi_name else ""
+    console.print(f"[bold green]Deploying {name}{target_label}...[/bold green]")
     if not rsync_project(config, name):
         console.print("[red]Deploy failed at rsync step.[/red]")
         return
