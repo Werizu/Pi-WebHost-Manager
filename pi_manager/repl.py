@@ -8,6 +8,8 @@ import sys
 from io import StringIO
 
 from prompt_toolkit import Application
+
+from . import __version__
 from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import WordCompleter
@@ -257,7 +259,7 @@ def _get_header() -> HTML:
     if pi_count == 0:
         return HTML(
             "\n"
-            '  <b>PiManager</b> <style fg="ansibrightblack">v0.3.0</style>\n'
+            f'  <b>PiManager</b> <style fg="ansibrightblack">v{__version__}</style>\n'
             '  <style fg="ansibrightblack">No Pis configured — run </style><b>setup</b>'
             '<style fg="ansibrightblack"> or </style><b>add-pi</b>\n'
         )
@@ -271,7 +273,7 @@ def _get_header() -> HTML:
         info = pis[name]
         return HTML(
             "\n"
-            '  <b>PiManager</b> <style fg="ansibrightblack">v0.3.0</style>\n'
+            f'  <b>PiManager</b> <style fg="ansibrightblack">v{__version__}</style>\n'
             f'  <ansicyan>{name}</ansicyan>'
             f' <style fg="ansibrightblack">({info.get("user", "pi")}@{info["host"]})</style>\n'
         )
@@ -279,7 +281,7 @@ def _get_header() -> HTML:
     # Multiple Pis: show all, mark active
     lines = [
         "\n",
-        '  <b>PiManager</b> <style fg="ansibrightblack">v0.3.0</style>\n',
+        f'  <b>PiManager</b> <style fg="ansibrightblack">v{__version__}</style>\n',
         f'  <style fg="ansibrightblack">{pi_count} Pis:</style> ',
     ]
     parts = []
