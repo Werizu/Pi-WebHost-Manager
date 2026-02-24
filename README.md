@@ -5,6 +5,7 @@ A command-line tool for managing one or more Raspberry Pis from macOS. Deploy we
 ## Features
 
 - **Multi-Pi support** — manage multiple Raspberry Pis from one tool, switch between them with `use`
+- **Tailscale support** — automatically connects via LAN at home or Tailscale VPN when away
 - **Numbered selection** — pick Pis, projects, and services by number instead of typing names
 - **Interactive REPL** — type `pi` and stay in a persistent shell with tab-completion and command history
 - **One-shot CLI** — run `pi status` or `pi deploy my-site` directly from your terminal for scripting
@@ -53,9 +54,10 @@ On first run a setup wizard walks you through:
 3. SSH key generation (stored safely in `~/.pi-manager/keys/`, not in the project directory)
 4. Copying the public key to your Pi
 5. Which services to monitor (defaults: `apache2`, `mariadb`, `cloudflared`)
-6. Option to add more Pis
-7. Cloudflare setup — same account for all Pis or separate tokens per Pi
-8. Deploy projects (local path, remote path, target Pi, Cloudflare zone ID per project)
+6. Tailscale IP (optional — for remote access via VPN)
+7. Option to add more Pis
+8. Cloudflare setup — same account for all Pis or separate tokens per Pi
+9. Deploy projects (local path, remote path, target Pi, Cloudflare zone ID per project)
 
 The wizard tests the SSH connection for each Pi and tells you if something's wrong. Re-run anytime with `setup` (REPL) or `pi setup` (CLI).
 
@@ -67,7 +69,7 @@ Run `pi` with no arguments to enter the interactive shell:
 
 ```
 $ pi
-  PiManager  v0.3.1
+  PiManager  v0.3.2
   2 Pis: homepi(192.168.1.100) · mediaserver(192.168.1.101)
 
   Type help for commands, exit to quit
@@ -112,6 +114,9 @@ pi add-service nginx         # add to active Pi's service list
 pi remove-service             # numbered selection to remove
 pi open my-site              # open project URL in browser
 pi cache-clear my-site       # purge Cloudflare cache only
+pi tailscale list            # show LAN/Tailscale IPs and connection mode
+pi tailscale set homepi 100.64.0.1  # set Tailscale IP for a Pi
+pi tailscale remove homepi   # remove Tailscale IP
 pi update                    # self-update from git
 pi list-pis
 pi add-pi
@@ -141,12 +146,15 @@ pi add-pi
 | `add-pi` | Add a new Pi interactively |
 | `remove-pi <name>` | Remove a Pi |
 | `rename-pi <old> <new>` | Rename a Pi (updates all references including projects) |
-| `edit-pi` | Edit a Pi's host, user, or SSH key path interactively |
+| `edit-pi` | Edit a Pi's host, user, SSH key path, or Tailscale IP interactively |
 | `use` | Numbered Pi selection to set active Pi (persists to config) |
 | `use <pi-name>` | Set active Pi by name (persists to config) |
 | `add-service <name>` | Add a service to a Pi's monitored services list |
 | `remove-service` | Numbered service selection, then remove from monitor list |
 | `remove-service <name>` | Remove a specific service from monitor list |
+| `tailscale list` | Show LAN/Tailscale IPs and current connection mode for all Pis |
+| `tailscale set <pi> <ip>` | Set Tailscale IP for a Pi |
+| `tailscale remove <pi>` | Remove Tailscale IP from a Pi |
 | `config` | Show current configuration |
 | `add-project` | Add a new deploy project (numbered Pi/folder selection) |
 | `list-projects` | List all configured projects |
@@ -190,14 +198,16 @@ Example `config.json`:
       "host": "192.168.1.100",
       "user": "pi",
       "ssh_key_path": "~/.pi-manager/keys/id_rsa",
-      "services": ["apache2", "mariadb", "cloudflared"]
+      "services": ["apache2", "mariadb", "cloudflared"],
+      "tailscale_host": "100.64.0.1"
     },
     "mediaserver": {
       "host": "192.168.1.101",
       "user": "pi",
       "ssh_key_path": "~/.pi-manager/keys/id_rsa",
       "services": ["plex", "samba"],
-      "cloudflare_api_token": "separate-token-if-different-account"
+      "cloudflare_api_token": "separate-token-if-different-account",
+      "tailscale_host": "100.64.0.2"
     }
   },
   "default_pi": "homepi",
@@ -224,6 +234,7 @@ Example `config.json`:
 - **`cloudflare_api_token`** (global) — used for all Pis by default
 - **`cloudflare_api_token`** (per-Pi, optional) — overrides the global token if a Pi uses a different Cloudflare account
 - **`cloudflare_zone_id`** — always per project, since one Pi can host multiple sites with different zones
+- **`tailscale_host`** (per-Pi, optional) — Tailscale IP for remote access when not on the home network
 - **`url`** (per-project, optional) — website URL used by the `open` command to launch in your browser
 
 **Migration:** If you're upgrading from v0.1.0, your old single-Pi config is automatically migrated to the new format on first load. No manual changes needed.
@@ -306,6 +317,9 @@ Yes. Run `pi cache-clear <project>` (or just `pi cache-clear` for a numbered sel
 
 **SSH opens in a new window — can I use the current terminal instead?**
 In one-shot mode (`pi ssh`) SSH also opens in a new Terminal.app window. This is by design so the REPL stays usable. For an inline session, run `ssh -i ~/.pi-manager/keys/id_rsa pi@your-pi-ip` directly.
+
+**How does Tailscale support work?**
+PiManager automatically detects whether you're on your home network (192.168.178.x / Fritz!Box) or not. At home, it connects via the Pi's LAN IP. Away from home, it uses the Tailscale IP if configured. Every connection shows which method is used (e.g. `-> LAN (192.168.178.201)` or `-> Tailscale (100.64.0.1)`). Set Tailscale IPs during setup, via `pi edit-pi`, or with `pi tailscale set <pi> <ip>`.
 
 **Connection issues?**
 - *"Can't reach the Pi"* — check that the Pi is powered on and the IP is correct

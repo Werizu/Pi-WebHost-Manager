@@ -23,6 +23,8 @@ from .config import (
     rename_pi,
     add_service_to_pi,
     remove_service_from_pi,
+    set_tailscale_ip,
+    remove_tailscale_ip,
     prompt_with_exit,
     numbered_select,
 )
@@ -382,6 +384,7 @@ def add_pi_cmd(ctx):
         user=pi_dict["user"],
         ssh_key_path=pi_dict["ssh_key_path"],
         services=pi_dict.get("services", []),
+        tailscale_host=pi_dict.get("tailscale_host", ""),
     )
 
     # Ask for Cloudflare token if this Pi uses a different account
@@ -484,6 +487,12 @@ def edit_pi_cmd(ctx):
             f"SSH key path [{pi.get('ssh_key_path', '~/.pi-manager/keys/id_rsa')}]",
             default="",
         )
+        current_ts = pi.get("tailscale_host", "")
+        ts_label = current_ts or "none"
+        new_ts = prompt_with_exit(
+            f"Tailscale IP [{ts_label}] (type 'none' to remove)",
+            default="",
+        )
 
         changed = False
         if new_host:
@@ -494,6 +503,12 @@ def edit_pi_cmd(ctx):
             changed = True
         if new_key:
             pi["ssh_key_path"] = new_key
+            changed = True
+        if new_ts:
+            if new_ts.lower() == "none":
+                pi.pop("tailscale_host", None)
+            else:
+                pi["tailscale_host"] = new_ts
             changed = True
 
         if changed:
@@ -852,6 +867,94 @@ def remove_project_cmd(ctx, name):
         projects = config.get("projects", {})
         if projects:
             console.print(f"Available: {', '.join(projects.keys())}")
+
+
+# ---------------------------------------------------------------------------
+# Tailscale management
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def tailscale():
+    """Manage Tailscale VPN IPs for Pis."""
+
+
+@tailscale.command("set")
+@click.argument("name", nargs=-1, required=True)
+@click.pass_context
+def tailscale_set(ctx, name):
+    """Set Tailscale IP for a Pi: tailscale set <pi-name> <ip>"""
+    parts = list(name)
+    if len(parts) < 2:
+        console.print("[yellow]Usage: pi tailscale set <pi-name> <ip>[/yellow]")
+        return
+
+    ip = parts[-1]
+    pi_name = " ".join(parts[:-1])
+    config = ctx.obj["config"]
+
+    if set_tailscale_ip(config, pi_name, ip):
+        console.print(f"[green]Tailscale IP for '{pi_name}' set to {ip}.[/green]")
+    else:
+        console.print(f"[red]Pi '{pi_name}' not found.[/red]")
+        pis = config.get("pis", {})
+        if pis:
+            console.print(f"Available: {', '.join(pis.keys())}")
+
+
+@tailscale.command("remove")
+@click.argument("name", nargs=-1, required=True)
+@click.pass_context
+def tailscale_remove(ctx, name):
+    """Remove Tailscale IP from a Pi."""
+    pi_name = " ".join(name)
+    config = ctx.obj["config"]
+
+    if remove_tailscale_ip(config, pi_name):
+        console.print(f"[green]Tailscale IP removed from '{pi_name}'.[/green]")
+    else:
+        pis = config.get("pis", {})
+        if pi_name not in pis:
+            console.print(f"[red]Pi '{pi_name}' not found.[/red]")
+            if pis:
+                console.print(f"Available: {', '.join(pis.keys())}")
+        else:
+            console.print(f"[yellow]No Tailscale IP configured for '{pi_name}'.[/yellow]")
+
+
+@tailscale.command("list")
+@click.pass_context
+def tailscale_list(ctx):
+    """Show Tailscale IPs for all Pis."""
+    from .ssh import is_on_home_network
+
+    config = ctx.obj["config"]
+    pis = config.get("pis", {})
+
+    if not pis:
+        console.print("[yellow]No Pis configured.[/yellow]")
+        return
+
+    at_home = is_on_home_network()
+
+    table = Table(title="Tailscale Configuration", show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="bold")
+    table.add_column("LAN IP")
+    table.add_column("Tailscale IP")
+    table.add_column("Connection")
+
+    for name, info in pis.items():
+        lan_ip = info.get("host", "")
+        ts_ip = info.get("tailscale_host", "")
+        if at_home:
+            mode = "[green]LAN[/green]"
+        elif ts_ip:
+            mode = "[blue]Tailscale[/blue]"
+        else:
+            mode = "[red]Unavailable[/red]"
+        table.add_row(name, lan_ip, ts_ip or "-", mode)
+
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------

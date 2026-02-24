@@ -96,7 +96,7 @@ def get_pi_config(config: dict, pi_name: str) -> dict:
     pi = pis[pi_name]
     # Per-Pi token overrides global token
     token = pi.get("cloudflare_api_token") or config.get("cloudflare_api_token", "")
-    return {
+    result = {
         "pi_host": pi["host"],
         "pi_user": pi.get("user", "pi"),
         "ssh_key_path": pi.get("ssh_key_path", "~/.pi-manager/keys/id_rsa"),
@@ -104,6 +104,9 @@ def get_pi_config(config: dict, pi_name: str) -> dict:
         "cloudflare_api_token": token,
         "projects": config.get("projects", {}),
     }
+    if "tailscale_host" in pi:
+        result["tailscale_host"] = pi["tailscale_host"]
+    return result
 
 
 def get_pi_names(config: dict) -> list[str]:
@@ -165,6 +168,7 @@ def add_pi(
     ssh_key_path: str,
     services: list[str] | None = None,
     cloudflare_api_token: str = "",
+    tailscale_host: str = "",
 ) -> None:
     """Add a Pi to the config."""
     pi_entry: dict = {
@@ -175,6 +179,8 @@ def add_pi(
     }
     if cloudflare_api_token:
         pi_entry["cloudflare_api_token"] = cloudflare_api_token
+    if tailscale_host:
+        pi_entry["tailscale_host"] = tailscale_host
 
     config.setdefault("pis", {})[name] = pi_entry
 
@@ -247,6 +253,28 @@ def remove_service_from_pi(config: dict, pi_name: str, service: str) -> bool:
     if service not in services:
         return False
     services.remove(service)
+    save_config(config)
+    return True
+
+
+def set_tailscale_ip(config: dict, pi_name: str, ip: str) -> bool:
+    """Set the Tailscale IP for a Pi. Returns True on success."""
+    pis = config.get("pis", {})
+    if pi_name not in pis:
+        return False
+    pis[pi_name]["tailscale_host"] = ip
+    save_config(config)
+    return True
+
+
+def remove_tailscale_ip(config: dict, pi_name: str) -> bool:
+    """Remove the Tailscale IP from a Pi. Returns True if it existed."""
+    pis = config.get("pis", {})
+    if pi_name not in pis:
+        return False
+    if "tailscale_host" not in pis[pi_name]:
+        return False
+    del pis[pi_name]["tailscale_host"]
     save_config(config)
     return True
 
@@ -336,12 +364,20 @@ def _setup_single_pi(default_ssh_key: str = "~/.pi-manager/keys/id_rsa") -> tupl
     )
     services = [s.strip() for s in services_input.split(",") if s.strip()]
 
+    # Tailscale
+    tailscale_ip = prompt_with_exit(
+        "\nTailscale IP (leave empty to skip)",
+        default="",
+    )
+
     pi_dict: dict = {
         "host": pi_host,
         "user": pi_user,
         "ssh_key_path": str(ssh_key_path),
         "services": services,
     }
+    if tailscale_ip:
+        pi_dict["tailscale_host"] = tailscale_ip
 
     return pi_name, pi_dict
 

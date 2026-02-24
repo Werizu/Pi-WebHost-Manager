@@ -37,6 +37,8 @@ from .config import (
     rename_pi,
     add_service_to_pi,
     remove_service_from_pi,
+    set_tailscale_ip,
+    remove_tailscale_ip,
     get_pi_config,
     get_pi_names,
     get_default_pi,
@@ -59,6 +61,7 @@ COMMANDS = [
     "add-project", "list-projects", "remove-project",
     "add-service", "remove-service",
     "open", "cache-clear",
+    "tailscale",
 ]
 
 HELP_TABLE = [
@@ -87,6 +90,10 @@ HELP_TABLE = [
     ("use <pi-name>", "Set active Pi by name (persists)"),
     ("add-service <name>", "Add a service to a Pi's monitor list"),
     ("remove-service", "Remove a service (numbered selection)"),
+    ("", ""),
+    ("tailscale list", "Show Tailscale IPs and connection mode"),
+    ("tailscale set <pi> <ip>", "Set Tailscale IP for a Pi"),
+    ("tailscale remove <pi>", "Remove Tailscale IP from a Pi"),
     ("", ""),
     ("config", "Show current configuration"),
     ("add-project", "Add a new deploy project (numbered selection)"),
@@ -644,6 +651,66 @@ def _dispatch_captured(args: list[str]) -> str:
                         for i, (name, info) in enumerate(projects.items(), 1):
                             zone = info.get("cloudflare_zone_id", "-")
                             cap.print(f"  {i}) {name} (zone: {zone})")
+
+            elif cmd == "tailscale":
+                from .ssh import is_on_home_network
+
+                if not rest:
+                    cap.print("[yellow]Usage: tailscale <set|remove|list>[/yellow]")
+                elif rest[0] == "list":
+                    pis = _config.get("pis", {})
+                    if not pis:
+                        cap.print("[yellow]No Pis configured.[/yellow]")
+                    else:
+                        at_home = is_on_home_network()
+                        table = Table(title="Tailscale Configuration", show_header=True, header_style="bold cyan")
+                        table.add_column("Name", style="bold")
+                        table.add_column("LAN IP")
+                        table.add_column("Tailscale IP")
+                        table.add_column("Connection")
+                        for name, info in pis.items():
+                            lan_ip = info.get("host", "")
+                            ts_ip = info.get("tailscale_host", "")
+                            if at_home:
+                                mode = "[green]LAN[/green]"
+                            elif ts_ip:
+                                mode = "[blue]Tailscale[/blue]"
+                            else:
+                                mode = "[red]Unavailable[/red]"
+                            table.add_row(name, lan_ip, ts_ip or "-", mode)
+                        cap.print(table)
+                elif rest[0] == "set":
+                    parts = rest[1:]
+                    if len(parts) < 2:
+                        cap.print("[yellow]Usage: tailscale set <pi-name> <ip>[/yellow]")
+                    else:
+                        ts_ip = parts[-1]
+                        ts_pi_name = " ".join(parts[:-1])
+                        if set_tailscale_ip(_config, ts_pi_name, ts_ip):
+                            cap.print(f"[green]Tailscale IP for '{ts_pi_name}' set to {ts_ip}.[/green]")
+                        else:
+                            cap.print(f"[red]Pi '{ts_pi_name}' not found.[/red]")
+                            pis = _config.get("pis", {})
+                            if pis:
+                                cap.print(f"Available: {', '.join(pis.keys())}")
+                elif rest[0] == "remove":
+                    if len(rest) < 2:
+                        cap.print("[yellow]Usage: tailscale remove <pi-name>[/yellow]")
+                    else:
+                        ts_pi_name = " ".join(rest[1:])
+                        if remove_tailscale_ip(_config, ts_pi_name):
+                            cap.print(f"[green]Tailscale IP removed from '{ts_pi_name}'.[/green]")
+                        else:
+                            pis = _config.get("pis", {})
+                            if ts_pi_name not in pis:
+                                cap.print(f"[red]Pi '{ts_pi_name}' not found.[/red]")
+                                if pis:
+                                    cap.print(f"Available: {', '.join(pis.keys())}")
+                            else:
+                                cap.print(f"[yellow]No Tailscale IP configured for '{ts_pi_name}'.[/yellow]")
+                else:
+                    cap.print(f"[red]Unknown tailscale subcommand: {rest[0]}[/red]")
+                    cap.print("[dim]Available: set, remove, list[/dim]")
 
             else:
                 cap.print(f"[red]Unknown command:[/red] {cmd}")

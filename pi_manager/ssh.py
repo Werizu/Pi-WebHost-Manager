@@ -1,3 +1,4 @@
+import ipaddress
 import subprocess
 import socket
 from pathlib import Path
@@ -12,14 +13,43 @@ class SSHError(Exception):
     """Raised when SSH connection fails with a user-friendly message."""
 
 
+def is_on_home_network() -> bool:
+    """Check if this machine has a 192.168.178.x IP (Fritz!Box home network)."""
+    home_net = ipaddress.IPv4Network("192.168.178.0/24")
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addr = ipaddress.IPv4Address(info[4][0])
+            if addr in home_net:
+                return True
+    except (socket.gaierror, ValueError):
+        pass
+    return False
+
+
+def resolve_host(pi_config: dict) -> tuple[str, str]:
+    """Return (host, label) — LAN or Tailscale based on network."""
+    if is_on_home_network():
+        return pi_config["pi_host"], f"LAN ({pi_config['pi_host']})"
+    ts = pi_config.get("tailscale_host")
+    if ts:
+        return ts, f"Tailscale ({ts})"
+    raise SSHError(
+        f"Not on home network and no Tailscale IP configured for this Pi. "
+        f"Set one with: pi tailscale set <name> <ip>"
+    )
+
+
 def _connect(config: dict) -> paramiko.SSHClient:
     """Create and return a connected SSH client."""
+    host, label = resolve_host(config)
+    console.print(f"[dim]→ {label}[/dim]")
+
     key_path = Path(config["ssh_key_path"]).expanduser()
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
         client.connect(
-            hostname=config["pi_host"],
+            hostname=host,
             username=config["pi_user"],
             key_filename=str(key_path),
             timeout=10,
@@ -67,8 +97,12 @@ def ping_pi(config: dict) -> None:
     """Check if a Pi is reachable via SSH and show response time."""
     import time as _time
 
-    host = config["pi_host"]
-    console.print(f"[cyan]Pinging {host} via SSH...[/cyan]")
+    try:
+        host, label = resolve_host(config)
+    except SSHError as e:
+        console.print(f"[red]{e}[/red]")
+        return
+    console.print(f"[cyan]Pinging {host} via SSH...[/cyan] [dim]({label})[/dim]")
     start = _time.monotonic()
     try:
         client = _connect(config)
@@ -81,8 +115,11 @@ def ping_pi(config: dict) -> None:
 
 def open_ssh_session(config: dict) -> None:
     """Open an interactive SSH session in a new Terminal.app window."""
+    host, label = resolve_host(config)
+    console.print(f"[dim]→ {label}[/dim]")
+
     key_path = Path(config["ssh_key_path"]).expanduser()
-    ssh_cmd = f'ssh -i \\"{key_path}\\" {config["pi_user"]}@{config["pi_host"]}'
+    ssh_cmd = f'ssh -i \\"{key_path}\\" {config["pi_user"]}@{host}'
 
     applescript = (
         'tell application "Terminal"\n'
