@@ -26,6 +26,7 @@ from .config import (
     prompt_with_exit,
     numbered_select,
 )
+from .ssh import SSHError
 
 console = Console()
 
@@ -176,7 +177,10 @@ def status(ctx, pi_name):
         for name in get_pi_names(config):
             pi_cfg = get_pi_config(config, name)
             console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-            show_status(pi_cfg)
+            try:
+                show_status(pi_cfg)
+            except SSHError as e:
+                console.print(f"[red]Offline — {e}[/red]")
 
 
 @cli.command()
@@ -195,7 +199,10 @@ def services(ctx, pi_name):
         for name in get_pi_names(config):
             pi_cfg = get_pi_config(config, name)
             console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-            show_services(pi_cfg)
+            try:
+                show_services(pi_cfg)
+            except SSHError as e:
+                console.print(f"[red]Offline — {e}[/red]")
 
 
 @cli.command()

@@ -342,6 +342,7 @@ def _dispatch_captured(args: list[str]) -> str:
 
             elif cmd == "status":
                 from .monitor import show_status
+                from .ssh import SSHError
                 if pi_name:
                     pi_cfg = get_pi_config(_config, pi_name)
                     cap.print(f"\n[bold cyan]--- {pi_name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
@@ -351,10 +352,14 @@ def _dispatch_captured(args: list[str]) -> str:
                     for name in get_pi_names(_config):
                         pi_cfg = get_pi_config(_config, name)
                         cap.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-                        show_status(pi_cfg)
+                        try:
+                            show_status(pi_cfg)
+                        except SSHError as e:
+                            cap.print(f"[red]Offline — {e}[/red]")
 
             elif cmd == "services":
                 from .monitor import show_services
+                from .ssh import SSHError
                 if pi_name:
                     pi_cfg = get_pi_config(_config, pi_name)
                     cap.print(f"\n[bold cyan]--- {pi_name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
@@ -364,7 +369,10 @@ def _dispatch_captured(args: list[str]) -> str:
                     for name in get_pi_names(_config):
                         pi_cfg = get_pi_config(_config, name)
                         cap.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-                        show_services(pi_cfg)
+                        try:
+                            show_services(pi_cfg)
+                        except SSHError as e:
+                            cap.print(f"[red]Offline — {e}[/red]")
 
             elif cmd == "logs":
                 from .monitor import show_logs
