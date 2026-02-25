@@ -1171,6 +1171,56 @@ def upgrade_pis(ctx, pi_name):
             console.print(f"[red]Offline — {e}[/red]")
 
 
+@cli.command("reboot-pis")
+@pi_option
+@click.pass_context
+def reboot_pis(ctx, pi_name):
+    """Reboot all Pis (or a specific one with --pi)."""
+    from .ssh import run_remote
+
+    config = ctx.obj["config"]
+    pi_names = [pi_name] if pi_name else get_pi_names(config)
+
+    if not click.confirm(f"Reboot {len(pi_names)} Pi(s)?"):
+        return
+
+    for name in pi_names:
+        pi_cfg = get_pi_config(config, name)
+        console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
+        try:
+            print_connection_label(pi_cfg)
+            console.print("[yellow]Rebooting...[/yellow]")
+            run_remote(pi_cfg, "sudo reboot")
+            console.print(f"[bold green]Reboot command sent to {name}.[/bold green]")
+        except SSHError as e:
+            console.print(f"[red]Offline — {e}[/red]")
+
+
+@cli.command("shutdown-pis")
+@pi_option
+@click.pass_context
+def shutdown_pis(ctx, pi_name):
+    """Shut down all Pis (or a specific one with --pi)."""
+    from .ssh import run_remote
+
+    config = ctx.obj["config"]
+    pi_names = [pi_name] if pi_name else get_pi_names(config)
+
+    if not click.confirm(f"Shut down {len(pi_names)} Pi(s)?"):
+        return
+
+    for name in pi_names:
+        pi_cfg = get_pi_config(config, name)
+        console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
+        try:
+            print_connection_label(pi_cfg)
+            console.print("[yellow]Shutting down...[/yellow]")
+            run_remote(pi_cfg, "sudo shutdown -h now")
+            console.print(f"[bold green]Shutdown command sent to {name}.[/bold green]")
+        except SSHError as e:
+            console.print(f"[red]Offline — {e}[/red]")
+
+
 @cli.command()
 @click.pass_context
 def update(ctx):
