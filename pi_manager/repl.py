@@ -55,7 +55,7 @@ from .config import (
 COMMANDS = [
     "status", "services", "logs", "restart", "stop", "start", "ping",
     "ssh", "deploy", "upgrade-pis",
-    "config", "setup", "shutdown", "reboot", "update",
+    "config", "setup", "shutdown", "reboot", "shutdown-pis", "reboot-pis", "update",
     "uninstall", "help", "clear", "exit", "quit",
     "list-pis", "add-pi", "remove-pi", "rename-pi", "edit-pi", "use",
     "add-project", "list-projects", "remove-project",
@@ -109,6 +109,8 @@ HELP_TABLE = [
     ("upgrade-pis --pi <name>", "Upgrade a specific Pi"),
     ("shutdown", "Shut down the active Pi"),
     ("reboot", "Reboot the active Pi"),
+    ("shutdown-pis", "Shut down ALL Pis (with confirmation)"),
+    ("reboot-pis", "Reboot ALL Pis (with confirmation)"),
     ("uninstall", "Uninstall PiManager"),
     ("clear", "Clear the output"),
     ("help", "Show this help"),
@@ -116,7 +118,7 @@ HELP_TABLE = [
 ]
 
 # Commands that need direct terminal access (interactive prompts)
-INTERACTIVE_COMMANDS = {"setup", "shutdown", "reboot", "uninstall", "add-pi", "add-project", "edit-pi", "update"}
+INTERACTIVE_COMMANDS = {"setup", "shutdown", "reboot", "shutdown-pis", "reboot-pis", "uninstall", "add-pi", "add-project", "edit-pi", "update"}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1447,6 +1449,52 @@ def _run_uninstall() -> None:
     sys.exit(0)
 
 
+def _run_shutdown_pis() -> None:
+    import click
+    from .ssh import run_remote, print_connection_label
+    from .ssh import SSHError as _SSHError
+    console = Console()
+    pi_names = get_pi_names(_config)
+    if not pi_names:
+        console.print("[yellow]No Pis configured.[/yellow]")
+        return
+    if not click.confirm(f"Shut down all {len(pi_names)} Pi(s)?"):
+        return
+    for name in pi_names:
+        pi_cfg = get_pi_config(_config, name)
+        console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
+        try:
+            print_connection_label(pi_cfg)
+            console.print("[yellow]Shutting down...[/yellow]")
+            run_remote(pi_cfg, "sudo shutdown -h now")
+            console.print(f"[bold green]Shutdown command sent to {name}.[/bold green]")
+        except _SSHError as e:
+            console.print(f"[red]Offline — {e}[/red]")
+
+
+def _run_reboot_pis() -> None:
+    import click
+    from .ssh import run_remote, print_connection_label
+    from .ssh import SSHError as _SSHError
+    console = Console()
+    pi_names = get_pi_names(_config)
+    if not pi_names:
+        console.print("[yellow]No Pis configured.[/yellow]")
+        return
+    if not click.confirm(f"Reboot all {len(pi_names)} Pi(s)?"):
+        return
+    for name in pi_names:
+        pi_cfg = get_pi_config(_config, name)
+        console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
+        try:
+            print_connection_label(pi_cfg)
+            console.print("[yellow]Rebooting...[/yellow]")
+            run_remote(pi_cfg, "sudo reboot")
+            console.print(f"[bold green]Reboot command sent to {name}.[/bold green]")
+        except _SSHError as e:
+            console.print(f"[red]Offline — {e}[/red]")
+
+
 # ---------------------------------------------------------------------------
 # Input handler
 # ---------------------------------------------------------------------------
@@ -1508,6 +1556,8 @@ def _on_accept(buff) -> None:
             "reboot": lambda: __import__("pi_manager.services", fromlist=["reboot_pi"]).reboot_pi(
                 get_pi_config(_config, _resolve_effective_pi(None))
             ),
+            "shutdown-pis": _run_shutdown_pis,
+            "reboot-pis": _run_reboot_pis,
             "uninstall": _run_uninstall,
             "add-pi": _run_add_pi,
             "add-project": _run_add_project,

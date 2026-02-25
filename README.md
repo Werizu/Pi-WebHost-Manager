@@ -125,6 +125,8 @@ pi tailscale set homepi 100.64.0.1  # set Tailscale IP for a Pi
 pi tailscale remove homepi   # remove Tailscale IP
 pi upgrade-pis               # upgrade packages on all Pis + restart services
 pi upgrade-pis --pi homepi   # upgrade a specific Pi only
+pi shutdown-pis              # shut down all Pis at once
+pi reboot-pis                # reboot all Pis at once
 pi update                    # self-update from git
 pi list-pis
 pi add-pi
@@ -173,10 +175,12 @@ pi add-pi
 | `cache-clear <name>` | Purge Cloudflare cache for a specific project (no deploy) |
 | `upgrade-pis` | Upgrade all packages on every Pi via apt-get, then restart their services |
 | `upgrade-pis --pi <name>` | Upgrade packages on a specific Pi only |
-| `setup` | Re-run the setup wizard |
-| `update` | Update PiManager to the latest version from git |
 | `shutdown` | Shut down the active Pi (asks for confirmation) |
 | `reboot` | Reboot the active Pi (asks for confirmation) |
+| `shutdown-pis` | Shut down **all** Pis at once (asks for confirmation) |
+| `reboot-pis` | Reboot **all** Pis at once (asks for confirmation) |
+| `setup` | Re-run the setup wizard |
+| `update` | Update PiManager to the latest version from git |
 | `uninstall` | Remove config and uninstall PiManager |
 | `help` | Show all available commands |
 | `exit` / `quit` | Exit the REPL |
