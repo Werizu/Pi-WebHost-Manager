@@ -64,6 +64,7 @@ harden_pi() {
     sudo ufw allow 22/tcp > /dev/null
     sudo ufw allow 80/tcp > /dev/null
     sudo ufw allow from 100.64.0.0/10 to any port 5000 > /dev/null
+    sudo ufw allow from 192.168.178.0/24 to any port 5050 > /dev/null
     sudo ufw --force enable > /dev/null
   " && echo -e "${GREEN}done${NC}" || { echo -e "${RED}FAILED${NC}"; return 1; }
 
@@ -83,7 +84,7 @@ echo "Pi Security Hardening"
 echo "====================="
 echo "SSH password auth → disabled"
 echo "Root login        → disabled"
-echo "UFW firewall      → enabled (SSH + HTTP + Tailscale→5000)"
+echo "UFW firewall      → enabled (SSH + HTTP + Tailscale→5000 + LAN→5050)"
 echo ""
 echo "Targets:"
 for i in 0 1 2; do

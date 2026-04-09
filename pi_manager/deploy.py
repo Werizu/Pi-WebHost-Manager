@@ -38,13 +38,16 @@ def rsync_project(config: dict, name: str) -> bool:
         "--exclude", ".git",
         "--exclude", ".DS_Store",
         "--exclude", "node_modules",
+        "--exclude", ".venv",
+        "--exclude", "__pycache__",
+        "--exclude", "*.pyc",
         "-e", f'ssh -i "{key_path}"',
         local_path,
         remote,
     ]
 
     console.print(f"[cyan]Syncing {name}...[/cyan]")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, errors="replace")
     if result.stdout:
         console.print(result.stdout.rstrip())
     if result.returncode != 0 and result.stderr:
@@ -97,13 +100,14 @@ def deploy(config: dict, name: str, pi_name: str = "") -> None:
 
     console.print("[green]Rsync complete.[/green]")
 
-    # Restart Apache after deploy
-    console.print("[cyan]Restarting Apache...[/cyan]")
-    stdout, stderr, code = run_remote(config, "sudo systemctl restart apache2")
-    if code != 0:
-        console.print(f"[red]Apache restart failed: {stderr}[/red]")
-    else:
-        console.print("[green]Apache restarted.[/green]")
+    # Restart Apache + purge cache only for web projects (those with a Cloudflare zone)
+    if project.get("cloudflare_zone_id"):
+        console.print("[cyan]Restarting Apache...[/cyan]")
+        stdout, stderr, code = run_remote(config, "sudo systemctl restart apache2")
+        if code != 0:
+            console.print(f"[red]Apache restart failed: {stderr}[/red]")
+        else:
+            console.print("[green]Apache restarted.[/green]")
 
     # Purge Cloudflare cache
     console.print("[cyan]Purging Cloudflare cache...[/cyan]")
