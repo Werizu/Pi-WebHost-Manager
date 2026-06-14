@@ -136,6 +136,14 @@ def check(ctx):
             config["pis"][name]["services"] = svcs
             console.print(f"[green]Services:[/green] {', '.join(svcs) or '-'}")
 
+            ts_out, _, _ = run_remote(pi_cfg, "tailscale ip -4 2>/dev/null")
+            ts_ip = ts_out.strip().splitlines()[0].strip() if ts_out.strip() else ""
+            if ts_ip and ts_ip != config["pis"][name].get("tailscale_host"):
+                config["pis"][name]["tailscale_host"] = ts_ip
+                console.print(f"[cyan]Tailscale IP → {ts_ip} (updated)[/cyan]")
+            elif ts_ip:
+                console.print(f"[green]Tailscale IP:[/green] {ts_ip}")
+
             out, _, code = run_remote(pi_cfg, "hostname")
             real = out.strip()
             if real and real != name:
