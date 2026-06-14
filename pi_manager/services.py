@@ -8,13 +8,18 @@ console = Console()
 DEFAULT_SERVICES = ["apache2", "mariadb", "cloudflared"]
 
 # Base-OS / systemd-internal units that aren't "applications" the user cares about.
+# Prefix match handles whole families (cloud-init-*, NetworkManager-*, ssh*, …).
 _SYSTEM_SERVICE_PREFIXES = (
     "systemd-", "getty@", "serial-getty@", "autovt@", "user@", "console-",
     "dpkg-", "apt-", "e2scrub", "blk-availability", "phpsessionclean",
-    "ssh@", "ifup@", "modprobe@",
+    "ifup@", "modprobe@", "wpa_supplicant",
+    # network / boot / SSH / firewall plumbing — NEVER auto-restart these:
+    "cloud-init", "cloud-config", "cloud-final",
+    "NetworkManager", "ssh", "regenerate_", "rpi-eeprom", "raspi-",
+    "networkd-", "wpa_", "dhcpcd",
 )
 _SYSTEM_SERVICES = {
-    "ssh", "sshd", "cron", "dbus", "rsyslog", "polkit", "networking",
+    "ssh", "sshd", "sshswitch", "cron", "dbus", "rsyslog", "polkit", "networking",
     "NetworkManager", "systemd-timesyncd", "wpa_supplicant", "dhcpcd",
     "avahi-daemon", "bluetooth", "ModemManager", "udisks2", "accounts-daemon",
     "rpcbind", "nfs-common", "packagekit", "unattended-upgrades",
@@ -22,7 +27,8 @@ _SYSTEM_SERVICES = {
     "alsa-restore", "alsa-state", "keyboard-setup", "console-setup",
     "plymouth", "x11-common", "lightdm", "getty", "emergency", "rescue",
     "networkd-dispatcher", "systemd-resolved", "fail2ban", "smartmontools",
-    "wpa_supplicant@", "rsync", "watchdog", "ntp", "chrony",
+    "rsync", "watchdog", "ntp", "chrony", "apparmor", "ufw", "tailscaled",
+    "fake-hwclock", "rfkill", "rng-tools", "polkitd", "udev", "dnsmasq",
 }
 
 
@@ -136,12 +142,31 @@ def restart_all(config: dict) -> None:
         restart_service(config, svc)
 
 
+def _fire_and_forget(config: dict, cmd: str) -> None:
+    """Send a command that drops the connection (reboot/shutdown) without
+    waiting for an exit status — otherwise we'd hang forever, since the Pi
+    goes down before the status is ever returned."""
+    import time as _time
+    from .ssh import get_ssh_client
+
+    try:
+        client = get_ssh_client(config)
+        try:
+            client.exec_command(cmd, timeout=5)
+            _time.sleep(2)  # give the server a moment to dispatch it
+        finally:
+            client.close()
+    except Exception:
+        # Connection dropping as the Pi powers down is expected — not an error.
+        pass
+
+
 def shutdown_pi(config: dict) -> None:
     """Shut down the Pi."""
     if not click.confirm("Are you sure you want to shut down the Pi?"):
         return
     console.print("[yellow]Shutting down...[/yellow]")
-    run_remote(config, "sudo shutdown -h now")
+    _fire_and_forget(config, "sudo shutdown -h now")
     console.print("[green]Shutdown command sent.[/green]")
 
 
@@ -150,7 +175,7 @@ def reboot_pi(config: dict) -> None:
     if not click.confirm("Are you sure you want to reboot the Pi?"):
         return
     console.print("[yellow]Rebooting...[/yellow]")
-    run_remote(config, "sudo reboot")
+    _fire_and_forget(config, "sudo reboot")
     console.print("[green]Reboot command sent.[/green]")
 
 

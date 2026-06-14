@@ -350,8 +350,10 @@ def reboot(ctx, pi_name):
 @pi_option
 @click.pass_context
 def upgrade(ctx, pi_name):
-    """Install OS/package updates on a Pi, then restart its services."""
-    from .services import upgrade_pi, detect_services, restart_service
+    """Install OS/package updates on a Pi. needrestart restarts affected services
+    automatically during the upgrade — no blanket service restart."""
+    from .ssh import run_remote
+    from .services import upgrade_pi, detect_services
 
     config = ctx.obj["config"]
     names = [pi_name] if pi_name else get_pi_names(config)
@@ -361,14 +363,12 @@ def upgrade(ctx, pi_name):
         try:
             print_connection_label(pi_cfg)
             if upgrade_pi(pi_cfg):
-                svcs = detect_services(pi_cfg)
-                config["pis"][name]["services"] = svcs
+                config["pis"][name]["services"] = detect_services(pi_cfg)
                 save_config(config)
-                if svcs:
-                    console.print(f"[cyan]Restarting services: {', '.join(svcs)}[/cyan]")
-                    for s in svcs:
-                        restart_service(pi_cfg, s)
-                console.print(f"[bold green]{name} fully updated.[/bold green]")
+                rr, _, _ = run_remote(pi_cfg, "test -f /var/run/reboot-required && echo yes || echo no")
+                if rr.strip() == "yes":
+                    console.print(f"[yellow]{name}: Neustart erforderlich → 'pi reboot --pi {name}'.[/yellow]")
+                console.print(f"[bold green]{name} aktualisiert.[/bold green]")
         except SSHError as e:
             console.print(f"[red]Offline — {e}[/red]")
 

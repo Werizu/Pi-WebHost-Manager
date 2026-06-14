@@ -726,11 +726,12 @@ def _run_ssh_select() -> None:
 
 
 def _run_upgrade_select() -> None:
-    """Select a Pi → install OS/package updates, then restart its services."""
+    """Select a Pi → install OS/package updates. needrestart restarts affected
+    services automatically during the upgrade; we never blanket-restart."""
     global _config
     console = Console()
-    from .services import upgrade_pi, detect_services, restart_service
-    from .ssh import print_connection_label, SSHError
+    from .services import upgrade_pi, detect_services
+    from .ssh import run_remote, print_connection_label, SSHError
     selected = _select_pi("Select a Pi to upgrade")
     if not selected:
         return
@@ -738,15 +739,14 @@ def _run_upgrade_select() -> None:
     try:
         print_connection_label(pi_cfg)
         if upgrade_pi(pi_cfg):
-            # Refresh detected services and restart them so updates take effect.
-            svcs = detect_services(pi_cfg)
-            _config["pis"][selected]["services"] = svcs
+            # Refresh the remembered service list (no restarting — needrestart
+            # already restarted what the upgrade required).
+            _config["pis"][selected]["services"] = detect_services(pi_cfg)
             save_config(_config)
-            if svcs:
-                console.print(f"[cyan]Restarting services: {', '.join(svcs)}[/cyan]")
-                for s in svcs:
-                    restart_service(pi_cfg, s)
-            console.print(f"[bold green]{selected} fully updated.[/bold green]")
+            rr, _, _ = run_remote(pi_cfg, "test -f /var/run/reboot-required && echo yes || echo no")
+            if rr.strip() == "yes":
+                console.print(f"[yellow]{selected}: Neustart erforderlich → mit 'reboot'.[/yellow]")
+            console.print(f"[bold green]{selected} aktualisiert.[/bold green]")
     except SSHError as e:
         console.print(f"[red]Offline — {e}[/red]")
 
