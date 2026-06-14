@@ -488,8 +488,80 @@ def _dispatch_nexus(rest: list, cap: Console) -> None:
             else:
                 cap.print(f"[red]Fehlgeschlagen: {err or out}[/red]")
 
+        elif sub == "pair":
+            import base64 as _b64
+            mins = 5
+            if len(rest) > 1:
+                try:
+                    mins = max(1, int(rest[1]))
+                except ValueError:
+                    pass
+            now = int((run_remote(pi_cfg, "date +%s")[0] or "0").strip() or "0")
+            pin = str(int.from_bytes(os.urandom(3), "big") % 1000000).zfill(6)
+            state = {"open_until": now + mins * 60, "pin": pin, "requests": [], "issued": {}}
+            b64 = _b64.b64encode(_json.dumps(state).encode()).decode()
+            run_remote(pi_cfg, f"echo {b64} | base64 -d > ~/nexus/config/pairing.json")
+            broker = _config["pis"][name].get("tailscale_host") or pi_cfg["pi_host"]
+            cap.print(f"[green]Pairing offen für {mins} Min.[/green]   PIN: [bold]{pin}[/bold]")
+            cap.print(f"[dim]Broker für neue Geräte: {broker}:1883[/dim]")
+            cap.print("Auf dem neuen Gerät den Agent installieren + PIN/Adresse eingeben, dann hier:")
+            cap.print("  [bold]nexus pending[/bold]  →  [bold]nexus approve <device_id> <Name>[/bold]")
+
+        elif sub == "pending":
+            st = _json.loads(run_remote(pi_cfg, "cat ~/nexus/config/pairing.json 2>/dev/null")[0] or "{}")
+            issued = st.get("issued", {})
+            reqs = [r for r in st.get("requests", []) if r.get("device_id") not in issued]
+            if not reqs:
+                cap.print("[dim]Keine wartenden Pairing-Anfragen.[/dim]")
+            else:
+                t = Table(title="Wartende Geräte", show_header=True, header_style="bold cyan")
+                t.add_column("device_id", style="bold"); t.add_column("Name"); t.add_column("OS")
+                for r in reqs:
+                    t.add_row(r.get("device_id", ""), r.get("name", ""), r.get("os", "-"))
+                cap.print(t)
+                cap.print("[dim]Freigeben:  nexus approve <device_id> <Name>[/dim]")
+
+        elif sub == "approve":
+            import base64 as _b64
+            if len(rest) < 2:
+                cap.print("[yellow]Usage: nexus approve <device_id> [Name][/yellow]")
+            else:
+                device_id = rest[1]
+                pname = " ".join(rest[2:]) if len(rest) > 2 else device_id
+                user = f"nexus-agent-{device_id}"
+                pw = os.urandom(12).hex()
+                # Broker-User anlegen + Mosquitto neu laden
+                run_remote(pi_cfg,
+                    "sudo docker run --rm -v /home/marlon/nexus/config:/cfg eclipse-mosquitto:2 "
+                    f"mosquitto_passwd -b /cfg/mosquitto_passwd {user} {pw} "
+                    "&& sudo chown 1883:1883 ~/nexus/config/mosquitto_passwd "
+                    "&& sudo chmod 0600 ~/nexus/config/mosquitto_passwd "
+                    "&& sudo docker restart nexus-mqtt >/dev/null")
+                # Creds ins pairing.json schreiben (Gerät holt sie via pair/result)
+                broker = _config["pis"][name].get("tailscale_host") or pi_cfg["pi_host"]
+                st = _json.loads(run_remote(pi_cfg, "cat ~/nexus/config/pairing.json 2>/dev/null")[0] or "{}")
+                st.setdefault("issued", {})[device_id] = {
+                    "username": user, "password": pw, "broker": broker, "port": 1883, "name": pname}
+                b64 = _b64.b64encode(_json.dumps(st).encode()).decode()
+                run_remote(pi_cfg, f"echo {b64} | base64 -d > ~/nexus/config/pairing.json")
+                cap.print(f"[green]'{pname}' ({device_id}) freigegeben.[/green] Broker-User [bold]{user}[/bold] angelegt.")
+                cap.print("[dim]Das Gerät verbindet sich automatisch, sobald es die Credentials abgeholt hat.[/dim]")
+
+        elif sub == "unpair":
+            if len(rest) < 2:
+                cap.print("[yellow]Usage: nexus unpair <device_id>[/yellow]")
+            else:
+                device_id = rest[1]
+                user = f"nexus-agent-{device_id}"
+                run_remote(pi_cfg,
+                    "sudo docker run --rm -v /home/marlon/nexus/config:/cfg eclipse-mosquitto:2 "
+                    f"mosquitto_passwd -D /cfg/mosquitto_passwd {user}; "
+                    "sudo docker restart nexus-mqtt >/dev/null")
+                run_remote(pi_cfg, f"curl -s -X DELETE http://localhost:8000/api/v1/devices/{shlex.quote(device_id)} >/dev/null 2>&1")
+                cap.print(f"[green]'{device_id}' entkoppelt — Broker-User {user} gesperrt.[/green]")
+
         else:
-            cap.print("[yellow]Usage: nexus [status | logs [brain|web|mqtt] | restart [brain|web|mqtt]][/yellow]")
+            cap.print("[yellow]Usage: nexus [status | logs | restart | pair [min] | pending | approve <id> <name> | unpair <id>][/yellow]")
     except SSHError as e:
         cap.print(f"[red]{e}[/red]")
 
