@@ -447,7 +447,7 @@ def _select_pi(prompt_text: str = "Select a Pi") -> str | None:
         return None
     if len(pi_names) == 1:
         return pi_names[0]
-    items = [(n, f"{n} ({_config['pis'][n]['host']})") for n in pi_names]
+    items = [(n, f"{n} ({_display_addr(_config['pis'][n])})") for n in pi_names]
     try:
         return numbered_select(items, prompt_text, allow_cancel=True)
     except UserExit:
@@ -544,11 +544,11 @@ def _run_use_select() -> None:
         save_config(_config)
         pi_info = _config["pis"][pi_names[0]]
         console.print(
-            f"[green]Active Pi set to [bold]{pi_names[0]}[/bold] ({pi_info['host']})[/green]"
+            f"[green]Active Pi set to [bold]{pi_names[0]}[/bold] ({_display_addr(pi_info)})[/green]"
         )
         return
 
-    items = [(n, f"{n} ({_config['pis'][n]['host']})") for n in pi_names]
+    items = [(n, f"{n} ({_display_addr(_config['pis'][n])})") for n in pi_names]
     try:
         selected = numbered_select(items, "Select a Pi")
     except UserExit:
@@ -560,7 +560,7 @@ def _run_use_select() -> None:
         save_config(_config)
         pi_info = _config["pis"][selected]
         console.print(
-            f"[green]Active Pi set to [bold]{selected}[/bold] ({pi_info['host']})[/green]"
+            f"[green]Active Pi set to [bold]{selected}[/bold] ({_display_addr(pi_info)})[/green]"
         )
 
 
@@ -575,7 +575,7 @@ def _run_edit_pi() -> None:
         return
 
     pis = _config.get("pis", {})
-    items = [(n, f"{n} ({pis[n]['host']})") for n in pi_names]
+    items = [(n, f"{n} ({_display_addr(pis[n])})") for n in pi_names]
     try:
         selected = numbered_select(items, "Select a Pi to edit", allow_cancel=True)
     except UserExit:
