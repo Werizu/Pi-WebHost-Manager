@@ -39,6 +39,31 @@ def confirm_with_exit(text, **kwargs):
     return click.confirm(text, **kwargs)
 
 
+def _read_single_key() -> str | None:
+    """Read one keypress from a TTY without requiring Enter.
+
+    Returns the character, or None if stdin isn't an interactive terminal
+    (so the caller can fall back to line input).
+    """
+    import sys
+
+    if not sys.stdin.isatty():
+        return None
+    try:
+        import termios
+        import tty
+    except ImportError:
+        return None  # non-Unix terminal → fall back to line input
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 def numbered_select(
     items: list[tuple[str, str]],
     prompt_text: str = "Select",
@@ -49,6 +74,9 @@ def numbered_select(
     items: list of (value, display_label) tuples.
     Returns the value of the selected item, or None if cancelled.
     Raises UserExit if user types exit/quit.
+
+    With 9 or fewer options on a real terminal, a single keypress selects
+    immediately (no Enter). Otherwise it falls back to typing a number + Enter.
     """
     if not items:
         return None
@@ -62,18 +90,43 @@ def numbered_select(
     if allow_cancel:
         click.echo("  0) Cancel")
 
+    # Fast path: single-keypress selection when every option is one digit
+    # and we're on a real interactive terminal.
+    import sys
+    single_key = len(items) <= 9 and sys.stdin.isatty()
     while True:
-        choice = prompt_with_exit(">")
-        try:
-            idx = int(choice.strip())
-        except ValueError:
-            click.echo("Please enter a number.")
-            continue
+        if single_key:
+            click.echo("> ", nl=False)
+            key = _read_single_key()
+            if key is None:
+                single_key = False  # not a TTY → fall back to line input
+                continue
+            # Ctrl-C / Esc → cancel
+            if key in ("\x03", "\x1b"):
+                click.echo("")
+                return None
+            if key in ("q", "Q"):
+                click.echo(key)
+                raise UserExit()
+            if not key.isdigit():
+                click.echo("")  # ignore stray key, redraw prompt
+                continue
+            click.echo(key)  # echo the chosen digit, then act
+            idx = int(key)
+        else:
+            choice = prompt_with_exit(">")
+            try:
+                idx = int(choice.strip())
+            except ValueError:
+                click.echo("Please enter a number.")
+                continue
+
         if allow_cancel and idx == 0:
             return None
         if 1 <= idx <= len(items):
             return items[idx - 1][0]
-        click.echo("Invalid choice.")
+        if not single_key:
+            click.echo("Invalid choice.")
 
 
 # ---------------------------------------------------------------------------
