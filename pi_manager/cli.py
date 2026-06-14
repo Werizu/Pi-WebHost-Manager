@@ -1,3 +1,5 @@
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -12,8 +14,6 @@ from .config import (
     load_config,
     save_config,
     first_run_setup,
-    add_project,
-    remove_project,
     get_pi_config,
     get_pi_names,
     get_default_pi,
@@ -21,8 +21,6 @@ from .config import (
     add_pi,
     remove_pi,
     rename_pi,
-    add_service_to_pi,
-    remove_service_from_pi,
     set_tailscale_ip,
     remove_tailscale_ip,
     prompt_with_exit,
@@ -45,6 +43,13 @@ def ensure_config() -> dict:
     return config
 
 
+def _hostname_label(name: str) -> str:
+    """Turn a friendly Pi name into a valid hostname label (letters/digits/hyphen)."""
+    label = re.sub(r"[^A-Za-z0-9-]", "-", name.strip())
+    label = re.sub(r"-+", "-", label).strip("-")
+    return label or "raspberrypi"
+
+
 # ---------------------------------------------------------------------------
 # Shared --pi option
 # ---------------------------------------------------------------------------
@@ -53,60 +58,6 @@ def ensure_config() -> dict:
 def pi_option(f):
     """Click decorator: adds --pi option to a command."""
     return click.option("--pi", "pi_name", default=None, help="Target Pi name")(f)
-
-
-# ---------------------------------------------------------------------------
-# Helper: list remote directories on a Pi
-# ---------------------------------------------------------------------------
-
-
-def _list_remote_dirs(pi_cfg: dict, base_path: str = "/var/www") -> list[str]:
-    """List directories on a Pi via SSH. Returns list of paths."""
-    from .ssh import run_remote
-
-    stdout, _, code = run_remote(
-        pi_cfg,
-        f'find {base_path} -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort',
-    )
-    if code == 0 and stdout.strip():
-        return [d.strip() for d in stdout.strip().split("\n") if d.strip()]
-    return []
-
-
-def _choose_remote_path(pi_cfg: dict) -> str:
-    """Let user pick a remote path from Pi directories or enter manually.
-
-    Raises UserExit if the user cancels.
-    """
-    dirs = _list_remote_dirs(pi_cfg)
-
-    if not dirs:
-        return prompt_with_exit("Remote path on Pi (e.g. /var/www/my-site/)")
-
-    console.print("\n[cyan]Directories on Pi:[/cyan]")
-    for i, d in enumerate(dirs, 1):
-        console.print(f"  {i}) {d}")
-    console.print(f"  {len(dirs) + 1}) Enter manually")
-    console.print(f"  0) Cancel")
-
-    while True:
-        choice = prompt_with_exit("Choose", default=str(len(dirs) + 1))
-        try:
-            idx = int(choice)
-        except ValueError:
-            console.print("[yellow]Please enter a number.[/yellow]")
-            continue
-
-        if idx == 0:
-            raise UserExit()
-        if 1 <= idx <= len(dirs):
-            path = dirs[idx - 1]
-            if not path.endswith("/"):
-                path += "/"
-            return path
-        if idx == len(dirs) + 1:
-            return prompt_with_exit("Remote path on Pi (e.g. /var/www/my-site/)")
-        console.print("[yellow]Invalid choice.[/yellow]")
 
 
 # ---------------------------------------------------------------------------
@@ -131,119 +82,86 @@ def cli(ctx):
 
 
 # ---------------------------------------------------------------------------
-# Commands
+# Status & check
 # ---------------------------------------------------------------------------
-
-
-@cli.command()
-@click.argument("name", required=False, default=None)
-@pi_option
-@click.pass_context
-def deploy(ctx, name, pi_name):
-    """Deploy a project to a Pi (rsync + cache purge)."""
-    from .deploy import deploy as do_deploy
-
-    config = ctx.obj["config"]
-
-    # No argument → numbered project selection
-    if not name:
-        projects = config.get("projects", {})
-        if not projects:
-            console.print("[yellow]No projects configured. Run `pi add-project` to add one.[/yellow]")
-            return
-        try:
-            items = [
-                (n, f"{n} → {info.get('remote_path', '?')}")
-                for n, info in projects.items()
-            ]
-            name = numbered_select(items, "Select a project to deploy", allow_cancel=True)
-            if not name:
-                return
-        except UserExit:
-            console.print("\n[yellow]Cancelled.[/yellow]")
-            return
-
-    project = config.get("projects", {}).get(name)
-    if not project:
-        console.print(f"[red]Unknown project: {name}[/red]")
-        projects = config.get("projects", {})
-        if projects:
-            console.print(f"Available: {', '.join(projects.keys())}")
-        return
-
-    # Resolve Pi: explicit --pi > project config > default
-    if not pi_name:
-        pi_name = project.get("pi")
-    pi_name = resolve_pi(config, pi_name)
-
-    pi_cfg = get_pi_config(config, pi_name)
-    pi_cfg["projects"] = config.get("projects", {})
-    do_deploy(pi_cfg, name, pi_name=pi_name)
 
 
 @cli.command()
 @pi_option
 @click.pass_context
 def status(ctx, pi_name):
-    """Show Pi system status (CPU, RAM, disk, temp, uptime)."""
-    from .monitor import show_status
+    """Show system status and auto-detected services for all Pis (or --pi <name>)."""
+    from .monitor import show_status, show_services
+    from .services import detect_services
 
     config = ctx.obj["config"]
-    if pi_name:
-        pi_cfg = get_pi_config(config, pi_name)
-        console.print(f"\n[bold cyan]--- {pi_name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-        print_connection_label(pi_cfg)
-        show_status(pi_cfg)
-    else:
-        # All Pis
-        for name in get_pi_names(config):
-            pi_cfg = get_pi_config(config, name)
-            console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-            try:
-                print_connection_label(pi_cfg)
-                show_status(pi_cfg)
-            except SSHError as e:
-                console.print(f"[red]Offline — {e}[/red]")
+    names = [pi_name] if pi_name else get_pi_names(config)
+    changed = False
+    for name in names:
+        pi_cfg = get_pi_config(config, name)
+        console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
+        try:
+            print_connection_label(pi_cfg)
+            show_status(pi_cfg)
+            svcs = detect_services(pi_cfg)
+            config["pis"][name]["services"] = svcs
+            changed = True
+            show_services(pi_cfg, services=svcs)
+        except SSHError as e:
+            console.print(f"[red]Offline — {e}[/red]")
+    if changed:
+        save_config(config)
 
 
 @cli.command()
-@pi_option
 @click.pass_context
-def services(ctx, pi_name):
-    """Show status of monitored services."""
-    from .monitor import show_services
+def check(ctx):
+    """Sweep all Pis: auto-detect services and adopt their real hostnames as names."""
+    from .ssh import run_remote
+    from .services import detect_services
 
     config = ctx.obj["config"]
-    if pi_name:
-        pi_cfg = get_pi_config(config, pi_name)
-        console.print(f"\n[bold cyan]--- {pi_name} ---[/bold cyan]")
-        print_connection_label(pi_cfg)
-        show_services(pi_cfg)
-    else:
-        for name in get_pi_names(config):
-            pi_cfg = get_pi_config(config, name)
-            console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-            try:
-                print_connection_label(pi_cfg)
-                show_services(pi_cfg)
-            except SSHError as e:
-                console.print(f"[red]Offline — {e}[/red]")
+    pi_names = get_pi_names(config)
+    if not pi_names:
+        console.print("[yellow]No Pis configured.[/yellow]")
+        return
+
+    renames = []
+    for name in list(pi_names):
+        pi_cfg = get_pi_config(config, name)
+        console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
+        try:
+            print_connection_label(pi_cfg)
+            svcs = detect_services(pi_cfg)
+            config["pis"][name]["services"] = svcs
+            console.print(f"[green]Services:[/green] {', '.join(svcs) or '-'}")
+
+            out, _, code = run_remote(pi_cfg, "hostname")
+            real = out.strip()
+            if real and real != name:
+                if real in config["pis"]:
+                    console.print(f"[yellow]Hostname '{real}' already used as a name — keeping '{name}'.[/yellow]")
+                else:
+                    renames.append((name, real))
+                    console.print(f"[cyan]Hostname '{real}' — adopting as tool name.[/cyan]")
+        except SSHError as e:
+            console.print(f"[red]Offline — {e}[/red]")
+
+    for old, new in renames:
+        rename_pi(config, old, new)
+    save_config(config)
+    console.print("\n[bold green]Check abgeschlossen.[/bold green]")
 
 
-@cli.command()
-@click.option("--live", is_flag=True, help="Stream logs in real-time.")
-@click.option("--lines", "-n", default=30, help="Number of lines to show.")
-@pi_option
-@click.pass_context
-def logs(ctx, live, lines, pi_name):
-    """Show Apache error logs."""
-    from .monitor import show_logs
+# ---------------------------------------------------------------------------
+# Service control: restart / stop / start
+# ---------------------------------------------------------------------------
 
-    config = ctx.obj["config"]
-    pi_name = resolve_pi(config, pi_name)
-    pi_cfg = get_pi_config(config, pi_name)
-    print_connection_label(pi_cfg)
-    show_logs(pi_cfg, live=live, lines=lines)
+
+def _services_for(config: dict, pi_cfg: dict) -> list:
+    """Known services for a Pi, falling back to live auto-detection."""
+    from .services import detect_services
+    return pi_cfg.get("services") or detect_services(pi_cfg)
 
 
 @cli.command()
@@ -251,18 +169,17 @@ def logs(ctx, live, lines, pi_name):
 @pi_option
 @click.pass_context
 def restart(ctx, service, pi_name):
-    """Restart a service (or 'all' for all monitored services)."""
+    """Restart a service (or 'all'). Without args, pick from a numbered list."""
     from .services import restart_service, restart_all
 
     config = ctx.obj["config"]
     pi_name = resolve_pi(config, pi_name)
     pi_cfg = get_pi_config(config, pi_name)
 
-    # No argument → numbered service selection
     if not service:
-        services = pi_cfg.get("services", [])
+        services = _services_for(config, pi_cfg)
         if not services:
-            console.print(f"[yellow]No services configured for {pi_name}.[/yellow]")
+            console.print(f"[yellow]No services found on {pi_name}.[/yellow]")
             return
         try:
             items = [(s, s) for s in services]
@@ -286,18 +203,17 @@ def restart(ctx, service, pi_name):
 @pi_option
 @click.pass_context
 def stop(ctx, service, pi_name):
-    """Stop a service on a Pi."""
+    """Stop a service on a Pi. Without args, pick from a numbered list."""
     from .services import stop_service
 
     config = ctx.obj["config"]
     pi_name = resolve_pi(config, pi_name)
     pi_cfg = get_pi_config(config, pi_name)
 
-    # No argument → numbered service selection
     if not service:
-        services = pi_cfg.get("services", [])
+        services = _services_for(config, pi_cfg)
         if not services:
-            console.print(f"[yellow]No services configured for {pi_name}.[/yellow]")
+            console.print(f"[yellow]No services found on {pi_name}.[/yellow]")
             return
         try:
             items = [(s, s) for s in services]
@@ -317,18 +233,17 @@ def stop(ctx, service, pi_name):
 @pi_option
 @click.pass_context
 def start(ctx, service, pi_name):
-    """Start a service on a Pi."""
+    """Start a service on a Pi. Without args, pick from a numbered list."""
     from .services import start_service
 
     config = ctx.obj["config"]
     pi_name = resolve_pi(config, pi_name)
     pi_cfg = get_pi_config(config, pi_name)
 
-    # No argument → numbered service selection
     if not service:
-        services = pi_cfg.get("services", [])
+        services = _services_for(config, pi_cfg)
         if not services:
-            console.print(f"[yellow]No services configured for {pi_name}.[/yellow]")
+            console.print(f"[yellow]No services found on {pi_name}.[/yellow]")
             return
         try:
             items = [(s, s) for s in services]
@@ -343,23 +258,9 @@ def start(ctx, service, pi_name):
     start_service(pi_cfg, service)
 
 
-@cli.command()
-@pi_option
-@click.pass_context
-def ping(ctx, pi_name):
-    """Check if a Pi is reachable via SSH and show response time."""
-    from .ssh import ping_pi
-
-    config = ctx.obj["config"]
-    if pi_name:
-        pi_cfg = get_pi_config(config, pi_name)
-        console.print(f"\n[bold cyan]--- {pi_name} ---[/bold cyan]")
-        ping_pi(pi_cfg)
-    else:
-        for name in get_pi_names(config):
-            pi_cfg = get_pi_config(config, name)
-            console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-            ping_pi(pi_cfg)
+# ---------------------------------------------------------------------------
+# SSH / power / upgrade
+# ---------------------------------------------------------------------------
 
 
 @cli.command()
@@ -404,21 +305,48 @@ def reboot(ctx, pi_name):
     reboot_pi(pi_cfg)
 
 
-# ---------------------------------------------------------------------------
-# Pi management: list-pis, add-pi, remove-pi
-# ---------------------------------------------------------------------------
-
-
-@cli.command("list-pis")
+@cli.command()
+@pi_option
 @click.pass_context
-def list_pis(ctx):
+def upgrade(ctx, pi_name):
+    """Install OS/package updates on a Pi, then restart its services."""
+    from .services import upgrade_pi, detect_services, restart_service
+
+    config = ctx.obj["config"]
+    names = [pi_name] if pi_name else get_pi_names(config)
+    for name in names:
+        pi_cfg = get_pi_config(config, name)
+        console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
+        try:
+            print_connection_label(pi_cfg)
+            if upgrade_pi(pi_cfg):
+                svcs = detect_services(pi_cfg)
+                config["pis"][name]["services"] = svcs
+                save_config(config)
+                if svcs:
+                    console.print(f"[cyan]Restarting services: {', '.join(svcs)}[/cyan]")
+                    for s in svcs:
+                        restart_service(pi_cfg, s)
+                console.print(f"[bold green]{name} fully updated.[/bold green]")
+        except SSHError as e:
+            console.print(f"[red]Offline — {e}[/red]")
+
+
+# ---------------------------------------------------------------------------
+# Pi management: list / add / remove / rename / edit / use
+# ---------------------------------------------------------------------------
+
+
+@cli.command("list")
+@click.pass_context
+def list_cmd(ctx):
     """List all configured Pis."""
     config = ctx.obj["config"]
     pis = config.get("pis", {})
     default = get_default_pi(config)
 
     if not pis:
-        console.print("[yellow]No Pis configured. Run `pi setup` or `pi add-pi`.[/yellow]")
+        console.print("[yellow]No Pis configured. Run `pi setup` or `pi add`.[/yellow]")
         return
 
     table = Table(title="Raspberry Pis", show_header=True, header_style="bold cyan")
@@ -429,16 +357,16 @@ def list_pis(ctx):
     table.add_column("Default")
 
     for name, info in pis.items():
-        is_default = "\u2605" if name == default else ""
+        is_default = "★" if name == default else ""
         svcs = ", ".join(info.get("services", [])) or "-"
         table.add_row(name, info.get("host", ""), info.get("user", "pi"), svcs, is_default)
 
     console.print(table)
 
 
-@cli.command("add-pi")
+@cli.command("add")
 @click.pass_context
-def add_pi_cmd(ctx):
+def add_cmd(ctx):
     """Add a new Pi interactively."""
     from .config import _setup_single_pi, test_connection
 
@@ -463,31 +391,8 @@ def add_pi_cmd(ctx):
         services=pi_dict.get("services", []),
         tailscale_host=pi_dict.get("tailscale_host", ""),
     )
-
-    # Ask for Cloudflare token if this Pi uses a different account
-    try:
-        if config.get("cloudflare_api_token"):
-            if not click.confirm(
-                f"\nUse the global Cloudflare token for {pi_name}?", default=True
-            ):
-                token = prompt_with_exit(f"Cloudflare API token for {pi_name}", default="")
-                if token:
-                    config["pis"][pi_name]["cloudflare_api_token"] = token
-                    save_config(config)
-        else:
-            token = prompt_with_exit(
-                f"\nCloudflare API token for {pi_name} (leave empty to skip)", default=""
-            )
-            if token:
-                config["pis"][pi_name]["cloudflare_api_token"] = token
-                save_config(config)
-    except UserExit:
-        # Pi was already added, just skip Cloudflare config
-        pass
-
     console.print(f"[green]Pi '{pi_name}' added.[/green]")
 
-    # Test connection
     pi_cfg = get_pi_config(config, pi_name)
     console.print("Testing SSH connection...")
     if test_connection(pi_cfg):
@@ -497,10 +402,10 @@ def add_pi_cmd(ctx):
         console.print("Check that your Pi is powered on and the IP/key are correct.")
 
 
-@cli.command("remove-pi")
+@cli.command("remove")
 @click.argument("name", nargs=-1, required=True)
 @click.pass_context
-def remove_pi_cmd(ctx, name):
+def remove_cmd(ctx, name):
     """Remove a Pi by name."""
     name = " ".join(name)
     config = ctx.obj["config"]
@@ -514,12 +419,14 @@ def remove_pi_cmd(ctx, name):
             console.print(f"Available: {', '.join(pis.keys())}")
 
 
-@cli.command("rename-pi")
+@cli.command("rename")
 @click.argument("old_name")
 @click.argument("new_name")
 @click.pass_context
-def rename_pi_cmd(ctx, old_name, new_name):
-    """Rename a Pi, updating all references (including projects)."""
+def rename_cmd(ctx, old_name, new_name):
+    """Rename a Pi: changes the real hostname and adopts the name in the tool."""
+    from .ssh import run_remote
+
     config = ctx.obj["config"]
 
     if old_name not in config.get("pis", {}):
@@ -528,24 +435,38 @@ def rename_pi_cmd(ctx, old_name, new_name):
         if pis:
             console.print(f"Available: {', '.join(pis.keys())}")
         return
-
     if new_name in config.get("pis", {}):
         console.print(f"[red]Pi '{new_name}' already exists.[/red]")
         return
 
+    host_label = _hostname_label(new_name)
+    pi_cfg = get_pi_config(config, old_name)
+    try:
+        print_connection_label(pi_cfg)
+        console.print(f"[cyan]Setting hostname to '{host_label}'...[/cyan]")
+        _, stderr, code = run_remote(pi_cfg, f"sudo hostnamectl set-hostname {shlex.quote(host_label)}")
+        if code != 0:
+            console.print(f"[red]Failed to set hostname: {stderr}[/red]")
+            console.print("[yellow]Renaming in the tool only.[/yellow]")
+        else:
+            run_remote(pi_cfg, f"sudo sed -i 's/^127\\.0\\.1\\.1.*/127.0.1.1\\t{host_label}/' /etc/hosts")
+            console.print(f"[green]Hostname set to '{host_label}'.[/green]")
+    except SSHError as e:
+        console.print(f"[red]Offline — {e}. Renaming in the tool only.[/red]")
+
     rename_pi(config, old_name, new_name)
-    console.print(f"[green]Pi '{old_name}' renamed to '{new_name}'.[/green]")
+    console.print(f"[green]'{old_name}' → '{new_name}'.[/green]")
 
 
-@cli.command("edit-pi")
+@cli.command("edit")
 @click.pass_context
-def edit_pi_cmd(ctx):
-    """Edit an existing Pi's host, user, or SSH key path interactively."""
+def edit_cmd(ctx):
+    """Edit an existing Pi's host, user, SSH key path, or Tailscale IP."""
     config = ctx.obj["config"]
     pi_names = get_pi_names(config)
 
     if not pi_names:
-        console.print("[yellow]No Pis configured. Run `pi add-pi` first.[/yellow]")
+        console.print("[yellow]No Pis configured. Run `pi add` first.[/yellow]")
         return
 
     try:
@@ -598,193 +519,40 @@ def edit_pi_cmd(ctx):
         console.print("\n[yellow]Cancelled.[/yellow]")
 
 
-@cli.command("add-service")
-@click.argument("name")
-@pi_option
+@cli.command("use")
+@click.argument("name", nargs=-1, required=True)
 @click.pass_context
-def add_service_cmd(ctx, name, pi_name):
-    """Add a service to a Pi's monitored services list."""
+def use_cmd(ctx, name):
+    """Set the default Pi (persists)."""
+    target = " ".join(name)
     config = ctx.obj["config"]
+    pi_names = get_pi_names(config)
 
-    if not pi_name:
-        pi_names = get_pi_names(config)
-        if not pi_names:
-            console.print("[yellow]No Pis configured.[/yellow]")
-            return
-        if len(pi_names) == 1:
-            pi_name = pi_names[0]
+    # Allow numeric selection
+    try:
+        idx = int(target)
+        if 1 <= idx <= len(pi_names):
+            target = pi_names[idx - 1]
         else:
-            try:
-                pis = config.get("pis", {})
-                items = [(n, f"{n} ({pis[n]['host']})") for n in pi_names]
-                pi_name = numbered_select(items, "Select a Pi", allow_cancel=True)
-                if not pi_name:
-                    return
-            except UserExit:
-                console.print("\n[yellow]Cancelled.[/yellow]")
-                return
-
-    if add_service_to_pi(config, pi_name, name):
-        console.print(f"[green]Service '{name}' added to {pi_name}.[/green]")
-    else:
-        pis = config.get("pis", {})
-        if pi_name not in pis:
-            console.print(f"[red]Pi '{pi_name}' not found.[/red]")
-        else:
-            console.print(f"[yellow]Service '{name}' already monitored on {pi_name}.[/yellow]")
-
-
-@cli.command("remove-service")
-@click.argument("name", required=False)
-@pi_option
-@click.pass_context
-def remove_service_cmd(ctx, name, pi_name):
-    """Remove a service from a Pi's monitored services list."""
-    config = ctx.obj["config"]
-
-    if not pi_name:
-        pi_names = get_pi_names(config)
-        if not pi_names:
-            console.print("[yellow]No Pis configured.[/yellow]")
+            console.print(f"[red]Invalid number: {idx}[/red]")
             return
-        if len(pi_names) == 1:
-            pi_name = pi_names[0]
-        else:
-            try:
-                pis = config.get("pis", {})
-                items = [(n, f"{n} ({pis[n]['host']})") for n in pi_names]
-                pi_name = numbered_select(items, "Select a Pi", allow_cancel=True)
-                if not pi_name:
-                    return
-            except UserExit:
-                console.print("\n[yellow]Cancelled.[/yellow]")
-                return
+    except ValueError:
+        pass
 
-    # If no service name given, show numbered selection
-    if not name:
-        services = config.get("pis", {}).get(pi_name, {}).get("services", [])
-        if not services:
-            console.print(f"[yellow]No services configured for {pi_name}.[/yellow]")
-            return
-        try:
-            items = [(s, s) for s in services]
-            name = numbered_select(items, f"Remove service from {pi_name}", allow_cancel=True)
-            if not name:
-                return
-        except UserExit:
-            console.print("\n[yellow]Cancelled.[/yellow]")
-            return
-
-    if remove_service_from_pi(config, pi_name, name):
-        console.print(f"[green]Service '{name}' removed from {pi_name}.[/green]")
-    else:
-        pis = config.get("pis", {})
-        if pi_name not in pis:
-            console.print(f"[red]Pi '{pi_name}' not found.[/red]")
-        else:
-            console.print(f"[red]Service '{name}' not found on {pi_name}.[/red]")
-            services = pis[pi_name].get("services", [])
-            if services:
-                console.print(f"Current services: {', '.join(services)}")
-
-
-@cli.command("open")
-@click.argument("project", required=False)
-@click.pass_context
-def open_cmd(ctx, project):
-    """Open a project's website URL in the default browser."""
-    import subprocess as sp
-
-    config = ctx.obj["config"]
-    projects = config.get("projects", {})
-
-    if not projects:
-        console.print("[yellow]No projects configured.[/yellow]")
+    if target not in pi_names:
+        console.print(f"[red]Unknown Pi: '{target}'[/red]")
+        for i, n in enumerate(pi_names, 1):
+            console.print(f"  {i}) {n} ({config['pis'][n]['host']})")
         return
 
-    if not project:
-        try:
-            items = [
-                (name, f"{name} (zone: {info.get('cloudflare_zone_id', '-')})")
-                for name, info in projects.items()
-            ]
-            project = numbered_select(items, "Select a project to open", allow_cancel=True)
-            if not project:
-                return
-        except UserExit:
-            console.print("\n[yellow]Cancelled.[/yellow]")
-            return
-
-    proj = projects.get(project)
-    if not proj:
-        console.print(f"[red]Unknown project: {project}[/red]")
-        if projects:
-            console.print(f"Available: {', '.join(projects.keys())}")
-        return
-
-    url = proj.get("url")
-    if not url:
-        console.print(
-            f"[yellow]No URL configured for '{project}'.[/yellow]\n"
-            f"[dim]Add a 'url' field to the project in ~/.pi-manager/config.json[/dim]"
-        )
-        return
-
-    console.print(f"[cyan]Opening {url}...[/cyan]")
-    sp.run(["open", url])
-
-
-@cli.command("cache-clear")
-@click.argument("project", required=False)
-@click.pass_context
-def cache_clear_cmd(ctx, project):
-    """Clear Cloudflare cache for a project without deploying."""
-    from .deploy import purge_cloudflare_cache
-
-    config = ctx.obj["config"]
-    projects = config.get("projects", {})
-
-    if not projects:
-        console.print("[yellow]No projects configured.[/yellow]")
-        return
-
-    if not project:
-        try:
-            items = [
-                (name, f"{name} (zone: {info.get('cloudflare_zone_id', '-')})")
-                for name, info in projects.items()
-            ]
-            project = numbered_select(items, "Select a project", allow_cancel=True)
-            if not project:
-                return
-        except UserExit:
-            console.print("\n[yellow]Cancelled.[/yellow]")
-            return
-
-    proj = projects.get(project)
-    if not proj:
-        console.print(f"[red]Unknown project: {project}[/red]")
-        if projects:
-            console.print(f"Available: {', '.join(projects.keys())}")
-        return
-
-    # Build a config dict with the right Cloudflare token
-    pi_name = proj.get("pi")
-    if pi_name and pi_name in config.get("pis", {}):
-        pi = config["pis"][pi_name]
-        token = pi.get("cloudflare_api_token") or config.get("cloudflare_api_token", "")
-    else:
-        token = config.get("cloudflare_api_token", "")
-
-    cf_config = {"cloudflare_api_token": token}
-
-    console.print(f"[cyan]Purging Cloudflare cache for {project}...[/cyan]")
-    if purge_cloudflare_cache(cf_config, proj):
-        console.print(f"[green]Cache cleared for {project}.[/green]")
+    config["default_pi"] = target
+    save_config(config)
+    info = config["pis"][target]
+    console.print(f"[green]Default Pi set to [bold]{target}[/bold] ({info.get('user', 'pi')}@{info['host']})[/green]")
 
 
 # ---------------------------------------------------------------------------
-# Setup / Config
+# Setup
 # ---------------------------------------------------------------------------
 
 
@@ -797,153 +565,6 @@ def setup(ctx):
         ctx.obj["config"] = config
     except UserExit:
         console.print("\n[yellow]Setup cancelled.[/yellow]")
-
-
-@cli.command("config")
-@click.pass_context
-def show_config(ctx):
-    """Show the current PiManager configuration."""
-    config = ctx.obj["config"]
-
-    # Global settings
-    table = Table(title="PiManager Config", show_header=True, header_style="bold cyan")
-    table.add_column("Setting", style="bold")
-    table.add_column("Value")
-
-    table.add_row("Default Pi", config.get("default_pi", "(not set)"))
-
-    cf_token = config.get("cloudflare_api_token", "")
-    if cf_token:
-        masked = cf_token[:4] + "..." + cf_token[-4:] if len(cf_token) > 8 else "****"
-    else:
-        masked = "(not set)"
-    table.add_row("Cloudflare token", masked)
-
-    projects = config.get("projects", {})
-    table.add_row("Projects", ", ".join(projects.keys()) if projects else "(none)")
-
-    console.print(table)
-
-    # Per-Pi table
-    pis = config.get("pis", {})
-    default = get_default_pi(config)
-    if pis:
-        pi_table = Table(title="Pis", show_header=True, header_style="bold cyan")
-        pi_table.add_column("Name", style="bold")
-        pi_table.add_column("Host")
-        pi_table.add_column("User")
-        pi_table.add_column("SSH key")
-        pi_table.add_column("Services")
-        pi_table.add_column("Default")
-
-        for name, info in pis.items():
-            is_default = "\u2605" if name == default else ""
-            svcs = ", ".join(info.get("services", [])) or "-"
-            pi_table.add_row(
-                name,
-                info.get("host", ""),
-                info.get("user", "pi"),
-                info.get("ssh_key_path", ""),
-                svcs,
-                is_default,
-            )
-        console.print(pi_table)
-
-
-# ---------------------------------------------------------------------------
-# Project management: add-project, list-projects, remove-project
-# ---------------------------------------------------------------------------
-
-
-@cli.command("add-project")
-@click.pass_context
-def add_project_cmd(ctx):
-    """Add a new deploy project interactively."""
-    config = ctx.obj["config"]
-
-    try:
-        name = prompt_with_exit("Project name")
-        if name in config.get("projects", {}):
-            console.print(f"[yellow]Project '{name}' already exists. Use a different name.[/yellow]")
-            return
-
-        local_path = prompt_with_exit("Local path (folder to sync)")
-
-        # Target Pi
-        pi_names = get_pi_names(config)
-        if pi_names:
-            if len(pi_names) == 1:
-                target_pi = pi_names[0]
-                console.print(f"Target Pi: [bold]{target_pi}[/bold]")
-            else:
-                pis = config.get("pis", {})
-                items = [(n, f"{n} ({pis[n]['host']})") for n in pi_names]
-                target_pi = numbered_select(items, "Select target Pi", allow_cancel=False)
-        else:
-            target_pi = ""
-
-        # Remote path: browse directories on Pi or enter manually
-        if target_pi and target_pi in config.get("pis", {}):
-            pi_cfg = get_pi_config(config, target_pi)
-            remote_path = _choose_remote_path(pi_cfg)
-        else:
-            remote_path = prompt_with_exit("Remote path on Pi (e.g. /var/www/my-site/)")
-
-        cf_zone = prompt_with_exit("Cloudflare zone ID (leave empty to skip)", default="")
-
-        add_project(config, name, local_path, remote_path, pi_name=target_pi, cloudflare_zone_id=cf_zone)
-        console.print(f"[green]Project '{name}' added.[/green]")
-        console.print(f"Deploy with: [bold]pi deploy {name}[/bold]")
-
-    except UserExit:
-        console.print("\n[yellow]Cancelled.[/yellow]")
-
-
-@cli.command("list-projects")
-@click.pass_context
-def list_projects_cmd(ctx):
-    """List all configured projects."""
-    projects = ctx.obj["config"].get("projects", {})
-
-    if not projects:
-        console.print("[yellow]No projects configured. Run `pi add-project` to add one.[/yellow]")
-        return
-
-    table = Table(title="Projects", show_header=True, header_style="bold cyan")
-    table.add_column("Name", style="bold")
-    table.add_column("Local path")
-    table.add_column("Remote path")
-    table.add_column("Pi")
-    table.add_column("CF zone")
-
-    for name, info in projects.items():
-        zone = info.get("cloudflare_zone_id", "")
-        table.add_row(
-            name,
-            info.get("local_path", ""),
-            info.get("remote_path", ""),
-            info.get("pi", "-"),
-            zone or "-",
-        )
-
-    console.print(table)
-
-
-@cli.command("remove-project")
-@click.argument("name", nargs=-1, required=True)
-@click.pass_context
-def remove_project_cmd(ctx, name):
-    """Remove a project by name."""
-    name = " ".join(name)
-    config = ctx.obj["config"]
-
-    if remove_project(config, name):
-        console.print(f"[green]Project '{name}' removed.[/green]")
-    else:
-        console.print(f"[red]Project '{name}' not found.[/red]")
-        projects = config.get("projects", {})
-        if projects:
-            console.print(f"Available: {', '.join(projects.keys())}")
 
 
 # ---------------------------------------------------------------------------
@@ -1055,7 +676,7 @@ def tailscale_list(ctx):
 
 
 # ---------------------------------------------------------------------------
-# Update
+# Update / uninstall
 # ---------------------------------------------------------------------------
 
 
@@ -1064,7 +685,6 @@ def do_update(config: dict) -> bool:
 
     Returns True if an update was installed, False otherwise.
     """
-    import re
     from pathlib import Path
 
     repo_path = config.get("install_path", "")
@@ -1084,7 +704,6 @@ def do_update(config: dict) -> bool:
         console.print(f"[red]Not a git repository: {repo_path}[/red]")
         return False
 
-    # Read version from pyproject.toml
     def _read_version():
         try:
             text = (repo / "pyproject.toml").read_text()
@@ -1096,13 +715,11 @@ def do_update(config: dict) -> bool:
     old_version = _read_version()
     console.print(f"Current version: [bold]{old_version}[/bold]")
 
-    # Save HEAD before pull
     old_head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=str(repo),
         capture_output=True, text=True,
     ).stdout.strip()
 
-    # Git pull
     console.print("[cyan]Pulling latest changes...[/cyan]")
     result = subprocess.run(
         ["git", "pull"], cwd=str(repo),
@@ -1117,7 +734,6 @@ def do_update(config: dict) -> bool:
         console.print("[green]Already up to date.[/green]")
         return False
 
-    # Changelog
     new_head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=str(repo),
         capture_output=True, text=True,
@@ -1132,7 +748,6 @@ def do_update(config: dict) -> bool:
         for line in log_result.stdout.strip().split("\n"):
             console.print(f"  {line}")
 
-    # Reinstall via pipx
     console.print("\n[cyan]Reinstalling via pipx...[/cyan]")
     install_result = subprocess.run(
         ["pipx", "install", ".", "--force"],
@@ -1148,79 +763,6 @@ def do_update(config: dict) -> bool:
     return True
 
 
-@cli.command("upgrade-pis")
-@pi_option
-@click.pass_context
-def upgrade_pis(ctx, pi_name):
-    """Upgrade packages on Pis via apt-get and restart their services."""
-    from .services import upgrade_pi, restart_all
-
-    config = ctx.obj["config"]
-    pi_names = [pi_name] if pi_name else get_pi_names(config)
-
-    for name in pi_names:
-        pi_cfg = get_pi_config(config, name)
-        console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-        try:
-            print_connection_label(pi_cfg)
-            if upgrade_pi(pi_cfg):
-                console.print("[cyan]Restarting services...[/cyan]")
-                restart_all(pi_cfg)
-                console.print(f"[bold green]{name} fully updated.[/bold green]")
-        except SSHError as e:
-            console.print(f"[red]Offline — {e}[/red]")
-
-
-@cli.command("reboot-pis")
-@pi_option
-@click.pass_context
-def reboot_pis(ctx, pi_name):
-    """Reboot all Pis (or a specific one with --pi)."""
-    from .ssh import run_remote
-
-    config = ctx.obj["config"]
-    pi_names = [pi_name] if pi_name else get_pi_names(config)
-
-    if not click.confirm(f"Reboot {len(pi_names)} Pi(s)?"):
-        return
-
-    for name in pi_names:
-        pi_cfg = get_pi_config(config, name)
-        console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-        try:
-            print_connection_label(pi_cfg)
-            console.print("[yellow]Rebooting...[/yellow]")
-            run_remote(pi_cfg, "sudo reboot")
-            console.print(f"[bold green]Reboot command sent to {name}.[/bold green]")
-        except SSHError as e:
-            console.print(f"[red]Offline — {e}[/red]")
-
-
-@cli.command("shutdown-pis")
-@pi_option
-@click.pass_context
-def shutdown_pis(ctx, pi_name):
-    """Shut down all Pis (or a specific one with --pi)."""
-    from .ssh import run_remote
-
-    config = ctx.obj["config"]
-    pi_names = [pi_name] if pi_name else get_pi_names(config)
-
-    if not click.confirm(f"Shut down {len(pi_names)} Pi(s)?"):
-        return
-
-    for name in pi_names:
-        pi_cfg = get_pi_config(config, name)
-        console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
-        try:
-            print_connection_label(pi_cfg)
-            console.print("[yellow]Shutting down...[/yellow]")
-            run_remote(pi_cfg, "sudo shutdown -h now")
-            console.print(f"[bold green]Shutdown command sent to {name}.[/bold green]")
-        except SSHError as e:
-            console.print(f"[red]Offline — {e}[/red]")
-
-
 @cli.command()
 @click.pass_context
 def update(ctx):
@@ -1229,23 +771,16 @@ def update(ctx):
     do_update(config)
 
 
-# ---------------------------------------------------------------------------
-# Uninstall
-# ---------------------------------------------------------------------------
-
-
 @cli.command()
 def uninstall():
     """Uninstall PiManager (remove config + pipx package)."""
     if not click.confirm("This will delete your config and uninstall PiManager. Continue?"):
         sys.exit(0)
 
-    # Remove config directory
     if CONFIG_DIR.exists():
         shutil.rmtree(CONFIG_DIR)
         console.print("[green]Config removed (~/.pi-manager)[/green]")
 
-    # Uninstall via pipx
     console.print("[cyan]Uninstalling via pipx...[/cyan]")
     subprocess.run(["pipx", "uninstall", "pi-manager"])
     sys.exit(0)

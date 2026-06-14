@@ -1,12 +1,7 @@
-import sys
-import time
-
 from rich.console import Console
-from rich.live import Live
 from rich.table import Table
-from rich.panel import Panel
 
-from .ssh import run_remote, get_ssh_client
+from .ssh import run_remote
 
 console = Console()
 
@@ -46,13 +41,20 @@ def show_status(config: dict) -> None:
     console.print(table)
 
 
-def show_services(config: dict) -> None:
-    """Display service statuses."""
+def show_services(config: dict, services: list = None) -> None:
+    """Display service statuses. Pass an explicit `services` list (e.g. from
+    auto-detection); otherwise fall back to the Pi's configured/default list."""
+    svc_list = services if services is not None else config.get("services", DEFAULT_SERVICES)
+
+    if not svc_list:
+        console.print("[dim]Keine Anwendungs-Services erkannt.[/dim]")
+        return
+
     table = Table(title="Services", show_header=True, header_style="bold cyan")
     table.add_column("Service", style="bold")
     table.add_column("Status")
 
-    for svc in config.get("services", DEFAULT_SERVICES):
+    for svc in svc_list:
         stdout, _, code = run_remote(config, f"systemctl is-active {svc}")
         status = stdout.strip()
         if status == "active":
@@ -64,37 +66,3 @@ def show_services(config: dict) -> None:
         table.add_row(svc, styled)
 
     console.print(table)
-
-
-def show_logs(config: dict, live: bool = False, lines: int = 30) -> None:
-    """Show Apache error logs, optionally streaming live."""
-    if not live:
-        stdout, stderr, code = run_remote(
-            config, f"sudo tail -{lines} /var/log/apache2/error.log"
-        )
-        if code == 0:
-            console.print(Panel(stdout or "[dim]No recent errors[/dim]", title="Apache Error Log"))
-        else:
-            console.print(f"[red]Failed to read logs: {stderr}[/red]")
-        return
-
-    # Live tail via paramiko channel
-    console.print("[cyan]Streaming logs (Ctrl+C to stop)...[/cyan]\n")
-    client = get_ssh_client(config)
-    try:
-        channel = client.get_transport().open_session()
-        channel.exec_command("sudo tail -f /var/log/apache2/error.log")
-        channel.settimeout(1.0)
-        while True:
-            try:
-                data = channel.recv(4096)
-                if not data:
-                    break
-                sys.stdout.write(data.decode())
-                sys.stdout.flush()
-            except TimeoutError:
-                continue
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Stopped.[/yellow]")
-    finally:
-        client.close()
