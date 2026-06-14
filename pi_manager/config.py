@@ -363,24 +363,18 @@ def _setup_single_pi(default_ssh_key: str = "~/.pi-manager/keys/id_rsa") -> tupl
                 ["ssh-copy-id", "-i", str(ssh_key_path), f"{pi_user}@{pi_host}"],
             )
 
-    # Services
-    services_input = prompt_with_exit(
-        "\nServices to monitor (comma-separated)",
-        default="apache2, mariadb, cloudflared",
-    )
-    services = [s.strip() for s in services_input.split(",") if s.strip()]
-
     # Tailscale
     tailscale_ip = prompt_with_exit(
         "\nTailscale IP (leave empty to skip)",
         default="",
     )
 
+    # Services are auto-detected later by `status` / `check` — no need to ask.
     pi_dict: dict = {
         "host": pi_host,
         "user": pi_user,
         "ssh_key_path": str(ssh_key_path),
-        "services": services,
+        "services": [],
     }
     if tailscale_ip:
         pi_dict["tailscale_host"] = tailscale_ip
@@ -410,63 +404,9 @@ def first_run_setup() -> dict:
         if not click.confirm("\nAdd another Pi?", default=False):
             break
 
-    # --- Cloudflare ---
-    cf_token = ""
-    click.echo("\n--- Cloudflare ---")
-    if click.confirm("Do you use Cloudflare for cache purging?", default=False):
-        if len(pis) > 1 and not click.confirm(
-            "Same Cloudflare account for all Pis?", default=True
-        ):
-            click.echo("Enter a Cloudflare API token per Pi (leave empty to skip):")
-            for pi_name_key in pis:
-                token = prompt_with_exit(f"  Token for {pi_name_key}", default="")
-                if token:
-                    pis[pi_name_key]["cloudflare_api_token"] = token
-        else:
-            cf_token = prompt_with_exit("Cloudflare API token", default="")
-
-    # --- Projects ---
-    has_cf = bool(cf_token) or any(
-        "cloudflare_api_token" in pi for pi in pis.values()
-    )
-
-    projects: dict = {}
-    click.echo("\n--- Projects ---")
-    click.echo("Add projects you want to deploy to a Pi.")
-    pi_names = list(pis.keys())
-    while click.confirm("Add a project?", default=not projects):
-        name = prompt_with_exit("  Project name")
-        local_path = prompt_with_exit("  Local path (folder to sync)")
-        remote_path = prompt_with_exit("  Remote path on Pi (e.g. /var/www/my-site/)")
-
-        # Which Pi?
-        if pi_names:
-            if len(pi_names) == 1:
-                target_pi = pi_names[0]
-                click.echo(f"  Target Pi: {target_pi}")
-            else:
-                items = [(n, f"{n} ({pis[n]['host']})") for n in pi_names]
-                target_pi = numbered_select(items, "  Select target Pi", allow_cancel=False)
-        else:
-            target_pi = ""
-
-        project: dict = {
-            "local_path": local_path,
-            "remote_path": remote_path,
-            "pi": target_pi,
-        }
-        if has_cf:
-            cf_zone = prompt_with_exit("  Cloudflare zone ID (leave empty to skip)", default="")
-            if cf_zone:
-                project["cloudflare_zone_id"] = cf_zone
-        projects[name] = project
-        click.echo(f"  Added '{name}'.\n")
-
     config = {
         "pis": pis,
         "default_pi": default_pi,
-        "cloudflare_api_token": cf_token,
-        "projects": projects,
     }
 
     save_config(config)
