@@ -49,7 +49,7 @@ from .config import (
 # ---------------------------------------------------------------------------
 
 COMMANDS = [
-    "status", "check",
+    "status", "check", "nexus",
     "restart", "stop", "start", "upgrade", "ssh", "shutdown", "reboot",
     "list", "add", "remove", "rename", "edit", "use",
     "tailscale",
@@ -60,6 +60,9 @@ COMMANDS = [
 HELP_TABLE = [
     ("status", "System- & Service-Status aller Pis"),
     ("check", "Alle Pis prüfen: Services & Hostnamen automatisch übernehmen"),
+    ("nexus", "NEXUS-Brain: Container & API-Status (status/logs/restart)"),
+    ("nexus logs [brain|web|mqtt]", "Container-Logs des Brain anzeigen"),
+    ("nexus restart [brain|web|mqtt]", "NEXUS-Container neu starten (Config-Reload)"),
     ("", ""),
     ("restart", "Service neu starten (Pi wählen → Service wählen)"),
     ("restart all", "Alle Services eines Pis neu starten (Pi wählen)"),
@@ -355,6 +358,9 @@ def _dispatch_captured(args: list[str]) -> str:
                 if changed:
                     save_config(_config)
 
+            elif cmd == "nexus":
+                _dispatch_nexus(rest, cap)
+
             elif cmd == "list":
                 _list_pis(cap)
 
@@ -405,6 +411,87 @@ def _dispatch_captured(args: list[str]) -> str:
 
     cap.file.seek(0)
     return cap.file.read()
+
+
+def _find_brain():
+    """Find the Pi running the NEXUS brain (nexus-brain container). Returns (name, pi_cfg) or (None, None)."""
+    from .ssh import run_remote, SSHError
+    names = get_pi_names(_config)
+    # Pis whose name hints at the brain first (faster), then the rest.
+    names = sorted(names, key=lambda n: 0 if ("brain" in n.lower() or "nexus" in n.lower()) else 1)
+    for n in names:
+        cfg = get_pi_config(_config, n)
+        try:
+            out, _, code = run_remote(cfg, "sudo docker ps --format '{{.Names}}' 2>/dev/null")
+            if code == 0 and "nexus-brain" in out:
+                return n, cfg
+        except SSHError:
+            continue
+    return None, None
+
+
+def _dispatch_nexus(rest: list, cap: Console) -> None:
+    """`nexus [status|logs|restart]` — Docker/NEXUS-bewusste Steuerung des Brain."""
+    import json as _json
+    from .ssh import run_remote, SSHError, print_connection_label
+    sub = rest[0] if rest else "status"
+
+    name, pi_cfg = _find_brain()
+    if not name:
+        cap.print("[yellow]Kein Pi mit laufendem NEXUS-Brain (nexus-brain) gefunden.[/yellow]")
+        return
+    cap.print(f"\n[bold cyan]--- NEXUS @ {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
+    try:
+        print_connection_label(pi_cfg, cap)
+        if sub == "status":
+            # Container
+            out, _, _ = run_remote(pi_cfg, "sudo docker ps -a --format '{{.Names}}\t{{.Status}}' | grep nexus- | sort")
+            t = Table(title="NEXUS Container", show_header=True, header_style="bold cyan")
+            t.add_column("Container", style="bold"); t.add_column("Status")
+            for line in (out.splitlines() if out.strip() else []):
+                parts = line.split("\t")
+                cname = parts[0]
+                cstat = parts[1] if len(parts) > 1 else "?"
+                col = "green" if cstat.lower().startswith("up") else "red"
+                t.add_row(cname, f"[{col}]{cstat}[/{col}]")
+            cap.print(t)
+            # API-Health
+            h, _, code = run_remote(pi_cfg, "curl -s --max-time 5 http://localhost:8000/api/v1/health")
+            if code == 0 and h.strip():
+                try:
+                    d = _json.loads(h)
+                    mq = "[green]verbunden[/green]" if d.get("mqtt_connected") else "[red]getrennt[/red]"
+                    plugins = d.get("plugins", {})
+                    on = [p for p, v in plugins.items() if v]
+                    cap.print(f"[bold]API:[/bold] {d.get('status','?')}  ·  [bold]MQTT:[/bold] {mq}  ·  "
+                              f"[bold]Geräte:[/bold] {d.get('devices_registered','?')}")
+                    cap.print(f"[bold]Plugins:[/bold] {', '.join(on) or '-'}")
+                except Exception:
+                    cap.print(f"[dim]Health: {h[:200]}[/dim]")
+            else:
+                cap.print("[yellow]API (Port 8000) antwortet nicht.[/yellow]")
+
+        elif sub == "logs":
+            short = rest[1] if len(rest) > 1 else "brain"
+            container = short if short.startswith("nexus-") else f"nexus-{short}"
+            out, _, code = run_remote(pi_cfg, f"sudo docker logs {shlex.quote(container)} --tail 40 2>&1")
+            cap.print(f"[dim]docker logs {container} --tail 40[/dim]")
+            cap.print(out or "[dim](keine Ausgabe)[/dim]")
+
+        elif sub == "restart":
+            target = rest[1] if len(rest) > 1 else "brain"
+            container = target if target.startswith("nexus-") else f"nexus-{target}"
+            cap.print(f"[cyan]Starte {container} neu (Config-Reload)…[/cyan]")
+            out, err, code = run_remote(pi_cfg, f"sudo docker restart {shlex.quote(container)}")
+            if code == 0:
+                cap.print(f"[green]{container} neu gestartet.[/green]")
+            else:
+                cap.print(f"[red]Fehlgeschlagen: {err or out}[/red]")
+
+        else:
+            cap.print("[yellow]Usage: nexus [status | logs [brain|web|mqtt] | restart [brain|web|mqtt]][/yellow]")
+    except SSHError as e:
+        cap.print(f"[red]{e}[/red]")
 
 
 def _list_pis(cap: Console) -> None:

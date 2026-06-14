@@ -195,6 +195,76 @@ def check(ctx):
 
 
 # ---------------------------------------------------------------------------
+# NEXUS-Brain control (Docker-aware)
+# ---------------------------------------------------------------------------
+
+
+def _find_brain(config: dict):
+    """Find the Pi running the nexus-brain container. Returns (name, pi_cfg) or (None, None)."""
+    from .ssh import run_remote
+    names = sorted(get_pi_names(config),
+                   key=lambda n: 0 if ("brain" in n.lower() or "nexus" in n.lower()) else 1)
+    for n in names:
+        cfg = get_pi_config(config, n)
+        try:
+            out, _, code = run_remote(cfg, "sudo docker ps --format '{{.Names}}' 2>/dev/null")
+            if code == 0 and "nexus-brain" in out:
+                return n, cfg
+        except SSHError:
+            continue
+    return None, None
+
+
+@cli.command("nexus")
+@click.argument("action", required=False, default="status")
+@click.argument("target", required=False, default="brain")
+@click.pass_context
+def nexus_cmd(ctx, action, target):
+    """NEXUS-Brain: status / logs [brain|web|mqtt] / restart [brain|web|mqtt]."""
+    import json as _json
+    from .ssh import run_remote
+
+    config = ctx.obj["config"]
+    name, pi_cfg = _find_brain(config)
+    if not name:
+        console.print("[yellow]Kein Pi mit laufendem NEXUS-Brain (nexus-brain) gefunden.[/yellow]")
+        return
+    console.print(f"\n[bold cyan]--- NEXUS @ {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
+    try:
+        print_connection_label(pi_cfg)
+        if action == "status":
+            out, _, _ = run_remote(pi_cfg, "sudo docker ps -a --format '{{.Names}}\t{{.Status}}' | grep nexus- | sort")
+            for line in (out.splitlines() if out.strip() else []):
+                console.print("  " + line.replace("\t", "  —  "))
+            h, _, code = run_remote(pi_cfg, "curl -s --max-time 5 http://localhost:8000/api/v1/health")
+            if code == 0 and h.strip():
+                try:
+                    d = _json.loads(h)
+                    on = [p for p, v in d.get("plugins", {}).items() if v]
+                    mq = "verbunden" if d.get("mqtt_connected") else "getrennt"
+                    console.print(f"API: {d.get('status','?')} · MQTT: {mq} · Geräte: {d.get('devices_registered','?')}")
+                    console.print(f"Plugins: {', '.join(on) or '-'}")
+                except Exception:
+                    console.print(h[:200])
+            else:
+                console.print("[yellow]API (Port 8000) antwortet nicht.[/yellow]")
+        elif action == "logs":
+            container = target if target.startswith("nexus-") else f"nexus-{target}"
+            out, _, _ = run_remote(pi_cfg, f"sudo docker logs {shlex.quote(container)} --tail 40 2>&1")
+            console.print(out or "[dim](keine Ausgabe)[/dim]")
+        elif action == "restart":
+            container = target if target.startswith("nexus-") else f"nexus-{target}"
+            console.print(f"[cyan]Starte {container} neu (Config-Reload)…[/cyan]")
+            out, err, code = run_remote(pi_cfg, f"sudo docker restart {shlex.quote(container)}")
+            console.print(f"[green]{container} neu gestartet.[/green]" if code == 0
+                          else f"[red]Fehlgeschlagen: {err or out}[/red]")
+        else:
+            console.print("[yellow]Usage: pi nexus [status|logs|restart] [brain|web|mqtt][/yellow]")
+    except SSHError as e:
+        console.print(f"[red]{e}[/red]")
+
+
+# ---------------------------------------------------------------------------
 # Service control: restart / stop / start
 # ---------------------------------------------------------------------------
 
