@@ -154,12 +154,22 @@ def reboot_pi(config: dict) -> None:
     console.print("[green]Reboot command sent.[/green]")
 
 
+# Make apt fully non-interactive over SSH (no TTY):
+# - DEBIAN_FRONTEND=noninteractive  → no debconf dialogs
+# - NEEDRESTART_MODE=a              → needrestart restarts services automatically
+#                                     instead of opening its menu (which would hang)
+# - --force-confdef/--force-confold → keep existing config files, no dpkg prompt
+_APT_ENV = "sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a"
+_APT_OPTS = '-y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold'
+
+
 def upgrade_pi(config: dict) -> bool:
     """Fully update the Pi's OS: apt update → full-upgrade → autoremove.
 
     Uses `full-upgrade` (not plain `upgrade`) so packages needing new
     dependencies — typical for Raspberry Pi OS kernel/firmware bumps — are
-    installed instead of held back. Returns True on success.
+    installed instead of held back. Runs fully non-interactively so it can't
+    hang on a needrestart/dpkg prompt over SSH. Returns True on success.
     """
     console.print("[cyan]Updating package lists...[/cyan]")
     _, stderr, code = run_remote(config, "sudo apt-get update -q")
@@ -171,7 +181,7 @@ def upgrade_pi(config: dict) -> bool:
     console.print("[cyan]Upgrading the OS (full-upgrade, this may take a few minutes)...[/cyan]")
     stdout, stderr, code = run_remote(
         config,
-        "sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y -q",
+        f"{_APT_ENV} apt-get full-upgrade {_APT_OPTS}",
     )
     if code != 0:
         console.print(f"[red]apt-get full-upgrade failed: {stderr}[/red]")
@@ -185,6 +195,6 @@ def upgrade_pi(config: dict) -> bool:
 
     # Clean up packages no longer needed after the upgrade.
     console.print("[cyan]Removing unused packages...[/cyan]")
-    run_remote(config, "sudo DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -q")
+    run_remote(config, f"{_APT_ENV} apt-get autoremove {_APT_OPTS}")
     console.print("[green]Cleanup done.[/green]")
     return True
