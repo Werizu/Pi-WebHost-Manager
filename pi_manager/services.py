@@ -59,6 +59,47 @@ def detect_services(config: dict) -> list:
     return sorted(out)
 
 
+def detect_lan_ip(config: dict) -> str:
+    """Return the Pi's primary private LAN IPv4 (192.168/10/172.16-31), or ""."""
+    out, _, code = run_remote(config, "hostname -I 2>/dev/null")
+    if code != 0 or not out.strip():
+        return ""
+    candidates = out.split()
+    # Prefer 192.168.x, then 10.x, then 172.16-31.x — skip Tailscale (100.64+) etc.
+    for prefix_ok in (
+        lambda ip: ip.startswith("192.168."),
+        lambda ip: ip.startswith("10."),
+        lambda ip: ip.startswith("172.") and 16 <= int(ip.split(".")[1] or 0) <= 31,
+    ):
+        for ip in candidates:
+            try:
+                if prefix_ok(ip):
+                    return ip
+            except (ValueError, IndexError):
+                continue
+    return ""
+
+
+def check_updates(config: dict) -> dict:
+    """Refresh apt lists and report pending updates + reboot status.
+
+    Returns {"total": int, "security": int, "reboot_required": bool}.
+    Runs `apt-get update` first so the counts are current.
+    """
+    result = {"total": 0, "security": 0, "reboot_required": False}
+    run_remote(config, "sudo apt-get update -q")
+    sim, _, code = run_remote(
+        config, "LANG=C apt-get -s -o Debug::NoLocking=true dist-upgrade 2>/dev/null"
+    )
+    if code == 0 and sim.strip():
+        inst = [l for l in sim.splitlines() if l.startswith("Inst ")]
+        result["total"] = len(inst)
+        result["security"] = sum(1 for l in inst if "security" in l.lower())
+    rr, _, _ = run_remote(config, "test -f /var/run/reboot-required && echo yes || echo no")
+    result["reboot_required"] = rr.strip() == "yes"
+    return result
+
+
 def stop_service(config: dict, service: str) -> None:
     """Stop a single service on the Pi."""
     console.print(f"[cyan]Stopping {service}...[/cyan]")

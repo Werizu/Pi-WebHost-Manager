@@ -116,9 +116,10 @@ def status(ctx, pi_name):
 @cli.command()
 @click.pass_context
 def check(ctx):
-    """Sweep all Pis: auto-detect services and adopt their real hostnames as names."""
+    """Full sweep of all Pis: health, services, Tailscale/LAN IP, hostname, OS updates."""
     from .ssh import run_remote
-    from .services import detect_services
+    from .monitor import show_status
+    from .services import detect_services, detect_lan_ip, check_updates
 
     config = ctx.obj["config"]
     pi_names = get_pi_names(config)
@@ -127,11 +128,15 @@ def check(ctx):
         return
 
     renames = []
+    needs_upgrade, needs_reboot, offline = [], [], []
     for name in list(pi_names):
         pi_cfg = get_pi_config(config, name)
         console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
         try:
             print_connection_label(pi_cfg)
+
+            show_status(pi_cfg)
+
             svcs = detect_services(pi_cfg)
             config["pis"][name]["services"] = svcs
             console.print(f"[green]Services:[/green] {', '.join(svcs) or '-'}")
@@ -144,6 +149,22 @@ def check(ctx):
             elif ts_ip:
                 console.print(f"[green]Tailscale IP:[/green] {ts_ip}")
 
+            lan_ip = detect_lan_ip(pi_cfg)
+            if lan_ip and lan_ip != config["pis"][name].get("host"):
+                console.print(f"[cyan]LAN IP → {lan_ip} (was {config['pis'][name].get('host')}, updated)[/cyan]")
+                config["pis"][name]["host"] = lan_ip
+
+            upd = check_updates(pi_cfg)
+            if upd["total"]:
+                sec = f", davon {upd['security']} Sicherheits-Updates" if upd["security"] else ""
+                console.print(f"[yellow]Updates verfügbar: {upd['total']} Pakete{sec}[/yellow]")
+                needs_upgrade.append(name)
+            else:
+                console.print("[green]System aktuell — keine Updates.[/green]")
+            if upd["reboot_required"]:
+                console.print("[yellow]Neustart erforderlich (reboot-required).[/yellow]")
+                needs_reboot.append(name)
+
             out, _, code = run_remote(pi_cfg, "hostname")
             real = out.strip()
             if real and real != name:
@@ -154,11 +175,23 @@ def check(ctx):
                     console.print(f"[cyan]Hostname '{real}' — adopting as tool name.[/cyan]")
         except SSHError as e:
             console.print(f"[red]Offline — {e}[/red]")
+            offline.append(name)
 
     for old, new in renames:
         rename_pi(config, old, new)
     save_config(config)
+
     console.print("\n[bold green]Check abgeschlossen.[/bold green]")
+    if offline:
+        console.print(f"[red]Nicht erreichbar:[/red] {', '.join(offline)}")
+    if needs_upgrade:
+        console.print(f"[yellow]Updates ausstehend auf:[/yellow] {', '.join(needs_upgrade)} "
+                      f"[dim]→ mit 'upgrade' einspielen[/dim]")
+    if needs_reboot:
+        console.print(f"[yellow]Neustart nötig auf:[/yellow] {', '.join(needs_reboot)} "
+                      f"[dim]→ mit 'reboot'[/dim]")
+    if not (offline or needs_upgrade or needs_reboot):
+        console.print("[green]Alles aktuell und sauber.[/green]")
 
 
 # ---------------------------------------------------------------------------

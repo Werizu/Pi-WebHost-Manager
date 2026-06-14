@@ -157,6 +157,7 @@ _config: dict = {}
 _output_text: str = ""
 _busy: bool = False
 _active_pi: str | None = None  # Session-level active Pi override
+_at_home: bool = True  # Whether we're on the home LAN (checked once at startup)
 _output_buffer: Buffer | None = None  # Scrollable output buffer
 _output_lexer = _AnsiStyleLexer()  # Lexer that preserves ANSI colors
 
@@ -226,6 +227,22 @@ def _resolve_effective_pi(pi_name: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _display_addr(info: dict) -> str:
+    """Address to show in the header: LAN IP at home, Tailscale IP when away."""
+    if not _at_home:
+        ts = info.get("tailscale_host")
+        if ts:
+            return ts
+    return info.get("host", "")
+
+
+def _net_badge() -> str:
+    """Small indicator of the current network for the header."""
+    if _at_home:
+        return '<style fg="ansigreen">LAN</style>'
+    return '<style fg="ansiblue">Tailscale</style>'
+
+
 def _get_header() -> HTML:
     pis = _config.get("pis", {})
     pi_count = len(pis)
@@ -247,20 +264,22 @@ def _get_header() -> HTML:
         info = pis[name]
         return HTML(
             "\n"
-            f'  <b>PiManager</b> <style fg="ansibrightblack">v{__version__}</style>\n'
+            f'  <b>PiManager</b> <style fg="ansibrightblack">v{__version__}</style>'
+            f'  <style fg="ansibrightblack">·</style> {_net_badge()}\n'
             f'  <ansicyan>{name}</ansicyan>'
-            f' <style fg="ansibrightblack">({info.get("user", "pi")}@{info["host"]})</style>\n'
+            f' <style fg="ansibrightblack">({info.get("user", "pi")}@{_display_addr(info)})</style>\n'
         )
 
     # Multiple Pis: show all, mark active
     lines = [
         "\n",
-        f'  <b>PiManager</b> <style fg="ansibrightblack">v{__version__}</style>\n',
+        f'  <b>PiManager</b> <style fg="ansibrightblack">v{__version__}</style>'
+        f'  <style fg="ansibrightblack">·</style> {_net_badge()}\n',
         f'  <style fg="ansibrightblack">{pi_count} Pis:</style> ',
     ]
     parts = []
     for name, info in pis.items():
-        host = info["host"]
+        host = _display_addr(info)
         if name == active:
             parts.append(f'<b><ansicyan>{name}</ansicyan></b><style fg="ansibrightblack">({host})</style>')
         else:
@@ -733,11 +752,14 @@ def _run_upgrade_select() -> None:
 
 
 def _run_check() -> None:
-    """Sweep ALL Pis: auto-detect services (save) and adopt real hostnames as tool names."""
+    """Full sweep of ALL Pis: health, services, Tailscale IP, LAN IP, hostname,
+    and pending OS updates. Auto-corrects the config facts; reports what needs
+    updating (run `upgrade` to install, `reboot` if required)."""
     global _config, _active_pi
     console = Console()
     from .ssh import run_remote, SSHError, print_connection_label
-    from .services import detect_services
+    from .monitor import show_status
+    from .services import detect_services, detect_lan_ip, check_updates
 
     pi_names = get_pi_names(_config)
     if not pi_names:
@@ -745,16 +767,25 @@ def _run_check() -> None:
         return
 
     renames: list[tuple[str, str]] = []
+    needs_upgrade: list[str] = []
+    needs_reboot: list[str] = []
+    offline: list[str] = []
+
     for name in list(pi_names):
         pi_cfg = get_pi_config(_config, name)
         console.print(f"\n[bold cyan]--- {name} ({pi_cfg['pi_host']}) ---[/bold cyan]")
         try:
             print_connection_label(pi_cfg)
+
+            # 1) System health
+            show_status(pi_cfg)
+
+            # 2) Services (detect + remember)
             svcs = detect_services(pi_cfg)
             _config["pis"][name]["services"] = svcs
             console.print(f"[green]Services:[/green] {', '.join(svcs) or '-'}")
 
-            # Refresh the Tailscale IP straight from the Pi (authoritative).
+            # 3) Tailscale IP — authoritative value from the Pi
             ts_out, _, _ = run_remote(pi_cfg, "tailscale ip -4 2>/dev/null")
             ts_ip = ts_out.strip().splitlines()[0].strip() if ts_out.strip() else ""
             if ts_ip and ts_ip != _config["pis"][name].get("tailscale_host"):
@@ -763,6 +794,25 @@ def _run_check() -> None:
             elif ts_ip:
                 console.print(f"[green]Tailscale IP:[/green] {ts_ip}")
 
+            # 4) LAN IP — keep the stored connection host current
+            lan_ip = detect_lan_ip(pi_cfg)
+            if lan_ip and lan_ip != _config["pis"][name].get("host"):
+                console.print(f"[cyan]LAN IP → {lan_ip} (was {_config['pis'][name].get('host')}, updated)[/cyan]")
+                _config["pis"][name]["host"] = lan_ip
+
+            # 5) Pending OS updates + reboot status
+            upd = check_updates(pi_cfg)
+            if upd["total"]:
+                sec = f", davon {upd['security']} Sicherheits-Updates" if upd["security"] else ""
+                console.print(f"[yellow]Updates verfügbar: {upd['total']} Pakete{sec}[/yellow]")
+                needs_upgrade.append(name)
+            else:
+                console.print("[green]System aktuell — keine Updates.[/green]")
+            if upd["reboot_required"]:
+                console.print("[yellow]Neustart erforderlich (reboot-required).[/yellow]")
+                needs_reboot.append(name)
+
+            # 6) Hostname — adopt the real one as the tool name
             out, _, code = run_remote(pi_cfg, "hostname")
             real = out.strip()
             if real and real != name:
@@ -773,6 +823,7 @@ def _run_check() -> None:
                     console.print(f"[cyan]Hostname '{real}' — adopting as tool name.[/cyan]")
         except SSHError as e:
             console.print(f"[red]Offline — {e}[/red]")
+            offline.append(name)
 
     # Apply renames after the sweep (avoid mutating the dict while iterating).
     for old, new in renames:
@@ -780,7 +831,19 @@ def _run_check() -> None:
         if _active_pi == old:
             _active_pi = new
     save_config(_config)
+
+    # Summary
     console.print("\n[bold green]Check abgeschlossen.[/bold green]")
+    if offline:
+        console.print(f"[red]Nicht erreichbar:[/red] {', '.join(offline)}")
+    if needs_upgrade:
+        console.print(f"[yellow]Updates ausstehend auf:[/yellow] {', '.join(needs_upgrade)} "
+                      f"[dim]→ mit 'upgrade' einspielen[/dim]")
+    if needs_reboot:
+        console.print(f"[yellow]Neustart nötig auf:[/yellow] {', '.join(needs_reboot)} "
+                      f"[dim]→ mit 'reboot'[/dim]")
+    if not (offline or needs_upgrade or needs_reboot):
+        console.print("[green]Alles aktuell und sauber.[/green]")
 
 
 def _run_tailscale_set() -> None:
@@ -1070,7 +1133,7 @@ def _on_accept(buff) -> None:
 
 def start_repl() -> None:
     """Start the interactive PiManager REPL."""
-    global _app, _config
+    global _app, _config, _at_home
 
     _config = load_config()
     if not _config:
@@ -1079,6 +1142,11 @@ def start_repl() -> None:
         except UserExit:
             Console().print("\n[yellow]Setup cancelled.[/yellow]")
             sys.exit(0)
+
+    # Detect once at startup which network we're on, so the header can show
+    # LAN IPs at home and Tailscale IPs when away.
+    from .ssh import is_on_home_network
+    _at_home = is_on_home_network()
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
